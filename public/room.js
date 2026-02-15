@@ -490,6 +490,7 @@ function ensurePlayer(sourceUrl = "") {
         state.mpegtsPlayer = player;
         player.attachMediaElement(video);
         player.load();
+        player.play().catch(() => {});
       }
     },
     video: {
