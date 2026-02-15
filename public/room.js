@@ -476,14 +476,15 @@ function ensurePlayer(sourceUrl = "") {
       mpegts(video) {
         if (!window.mpegts || !window.mpegts.isSupported()) return;
         destroyMpegtsPlayer();
+        const sourceUrl = new URL(video.src || "", location.origin).toString();
         const player = window.mpegts.createPlayer(
           {
             type: "mpegts",
-            url: video.src,
+            url: sourceUrl,
             isLive: false
           },
           {
-            enableWorker: true,
+            enableWorker: false,
             autoCleanupSourceBuffer: true
           }
         );
