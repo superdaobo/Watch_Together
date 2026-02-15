@@ -303,6 +303,10 @@ input[type="color"] {
   height: 100%;
 }
 
+.dplayer-container {
+  position: relative;
+}
+
 .video-stage .dplayer {
   background: #02060b;
 }
@@ -434,14 +438,6 @@ input[type="color"] {
   opacity: 0;
   pointer-events: none;
   transform: translateX(-50%) translateY(8px);
-}
-
-.video-stage:not(:fullscreen) .fullscreen-danmaku-bar {
-  display: none !important;
-}
-
-.video-stage:not(:-webkit-full-screen) .fullscreen-danmaku-bar {
-  display: none !important;
 }
 
 .chat-panel {

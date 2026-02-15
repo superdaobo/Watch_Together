@@ -177,8 +177,16 @@ function getFullscreenDanmakuPlugin() {
   return state.fullscreenDanmakuPlugin;
 }
 
+function getFullscreenPluginMountTarget() {
+  return state.dp?.container || refs.dplayerContainer || refs.videoStage;
+}
+
 function ensureFullscreenDanmakuPlugin() {
   if (state.fullscreenDanmakuPlugin) {
+    const mountTarget = getFullscreenPluginMountTarget();
+    if (mountTarget && state.fullscreenDanmakuPlugin.root.parentElement !== mountTarget) {
+      mountTarget.appendChild(state.fullscreenDanmakuPlugin.root);
+    }
     return state.fullscreenDanmakuPlugin;
   }
   const root = document.createElement("div");
@@ -195,7 +203,8 @@ function ensureFullscreenDanmakuPlugin() {
   const sendBtn = root.querySelector(".btn.primary");
   const exitBtn = root.querySelector(".btn.ghost");
 
-  refs.videoStage.appendChild(root);
+  const mountTarget = getFullscreenPluginMountTarget();
+  mountTarget.appendChild(root);
   state.fullscreenDanmakuPlugin = {
     root,
     identity,
@@ -866,6 +875,12 @@ function bindActions() {
     if (pluginRoot && event.target instanceof Node && pluginRoot.contains(event.target)) return;
     showFullscreenDanmakuBar(true);
   });
+  refs.dplayerContainer.addEventListener("pointerup", (event) => {
+    if (!isFullscreenMode()) return;
+    const pluginRoot = getFullscreenDanmakuPlugin()?.root;
+    if (pluginRoot && event.target instanceof Node && pluginRoot.contains(event.target)) return;
+    showFullscreenDanmakuBar(true);
+  });
 
   refs.fullscreenBtn.addEventListener("click", () => requestPlayerFullscreen());
 
@@ -883,11 +898,19 @@ function bindActions() {
   });
 
   document.addEventListener("fullscreenchange", () => {
+    if (document.fullscreenElement && !state.playerFullscreen) {
+      handlePlayerFullscreen(true);
+      return;
+    }
     if (!document.fullscreenElement && state.playerFullscreen) {
       handlePlayerFullscreen(false);
     }
   });
   document.addEventListener("webkitfullscreenchange", () => {
+    if (document.webkitFullscreenElement && !state.playerFullscreen) {
+      handlePlayerFullscreen(true);
+      return;
+    }
     if (!document.webkitFullscreenElement && state.playerFullscreen) {
       handlePlayerFullscreen(false);
     }
