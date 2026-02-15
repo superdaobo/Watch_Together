@@ -1,6 +1,7 @@
 const EMOJI_LIST = ["😀", "😂", "😎", "🥳", "😭", "❤️", "👍", "🔥", "👀", "🎉"];
-const FULLSCREEN_DANMAKU_AUTO_HIDE_MS = 3600;
+const FULLSCREEN_DANMAKU_AUTO_HIDE_MS = 9000;
 const BLOCKED_SYNC_SEEK_INTERVAL_MS = 1800;
+const SW_VERSION = "20260215-v2";
 
 const state = {
   socket: null,
@@ -31,7 +32,9 @@ const state = {
   playerFullscreen: false,
   isMobile: false,
   serviceWorkerReady: false,
-  fullscreenDanmakuPlugin: null
+  fullscreenDanmakuPlugin: null,
+  directRecoverAttempted: false,
+  sourceRecovering: false
 };
 
 const refs = {
@@ -151,11 +154,15 @@ function waitForController(timeoutMs = 5000) {
   });
 }
 
-async function ensureDirectS3Bridge() {
+async function ensureDirectS3Bridge(forceUpdate = false) {
   if (!("serviceWorker" in navigator)) {
     throw new Error("当前浏览器不支持 Service Worker，无法直连 S3 播放");
   }
-  const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+  const swScript = `/sw.js?v=${encodeURIComponent(SW_VERSION)}`;
+  const registration = await navigator.serviceWorker.register(swScript, { scope: "/" });
+  if (forceUpdate) {
+    await registration.update();
+  }
   registration.waiting?.postMessage?.({ type: "SKIP_WAITING" });
   await navigator.serviceWorker.ready;
   if (!navigator.serviceWorker.controller) {
@@ -181,36 +188,59 @@ function getFullscreenPluginMountTarget() {
   return state.dp?.container || refs.dplayerContainer || refs.videoStage;
 }
 
+function getDPlayerRightControlContainer() {
+  return (
+    state.dp?.container?.querySelector?.(".dplayer-icons.dplayer-icons-right") ||
+    state.dp?.container?.querySelector?.(".dplayer-icons-right") ||
+    null
+  );
+}
+
 function ensureFullscreenDanmakuPlugin() {
   if (state.fullscreenDanmakuPlugin) {
     const mountTarget = getFullscreenPluginMountTarget();
     if (mountTarget && state.fullscreenDanmakuPlugin.root.parentElement !== mountTarget) {
       mountTarget.appendChild(state.fullscreenDanmakuPlugin.root);
     }
+    const rightControls = getDPlayerRightControlContainer();
+    if (rightControls && state.fullscreenDanmakuPlugin.toggleBtn?.parentElement !== rightControls) {
+      rightControls.appendChild(state.fullscreenDanmakuPlugin.toggleBtn);
+    }
     return state.fullscreenDanmakuPlugin;
   }
   const root = document.createElement("div");
-  root.className = "fullscreen-danmaku-bar hidden";
+  root.className = "dplayer-danmaku-plugin-bar hidden";
   root.innerHTML = `
-    <span class="fullscreen-danmaku-identity"></span>
+    <span class="dplayer-danmaku-plugin-identity"></span>
     <input type="text" maxlength="80" placeholder="全屏弹幕输入..." />
     <button type="button" class="btn primary">发送</button>
     <button type="button" class="btn ghost">退出全屏</button>
   `;
 
-  const identity = root.querySelector(".fullscreen-danmaku-identity");
+  const identity = root.querySelector(".dplayer-danmaku-plugin-identity");
   const input = root.querySelector("input");
   const sendBtn = root.querySelector(".btn.primary");
   const exitBtn = root.querySelector(".btn.ghost");
 
+  const toggleBtn = document.createElement("button");
+  toggleBtn.type = "button";
+  toggleBtn.className = "dplayer-icon dplayer-danmaku-plugin-toggle";
+  toggleBtn.setAttribute("aria-label", "显示弹幕输入");
+  toggleBtn.title = "弹幕输入";
+  toggleBtn.textContent = "弹";
+
   const mountTarget = getFullscreenPluginMountTarget();
   mountTarget.appendChild(root);
+  const rightControls = getDPlayerRightControlContainer();
+  rightControls?.appendChild(toggleBtn);
+
   state.fullscreenDanmakuPlugin = {
     root,
     identity,
     input,
     sendBtn,
-    exitBtn
+    exitBtn,
+    toggleBtn
   };
   return state.fullscreenDanmakuPlugin;
 }
@@ -383,11 +413,20 @@ function ensurePlayer(sourceUrl = "") {
     fullscreenPlugin.root.dataset.bound = "1";
     fullscreenPlugin.sendBtn.addEventListener("click", () => sendDanmaku(true));
     fullscreenPlugin.exitBtn.addEventListener("click", () => cancelPlayerFullscreen());
+    fullscreenPlugin.toggleBtn?.addEventListener("click", () => {
+      if (!isFullscreenMode()) {
+        requestPlayerFullscreen();
+        return;
+      }
+      showFullscreenDanmakuBar(true);
+      fullscreenPlugin.input?.focus();
+    });
     fullscreenPlugin.input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") sendDanmaku(true);
     });
     fullscreenPlugin.input.addEventListener("focus", () => showFullscreenDanmakuBar(false));
-    fullscreenPlugin.input.addEventListener("input", () => showFullscreenDanmakuBar(true));
+    fullscreenPlugin.input.addEventListener("input", () => showFullscreenDanmakuBar(false));
+    fullscreenPlugin.input.addEventListener("blur", () => showFullscreenDanmakuBar(true));
     fullscreenPlugin.root.addEventListener("pointerdown", () => showFullscreenDanmakuBar(false));
   }
 
@@ -428,6 +467,19 @@ function getCurrentSource() {
   return state.sourceCandidates[state.sourceIndex] || "";
 }
 
+function appendRetryParam(url, token) {
+  const suffix = token || String(Date.now());
+  try {
+    const parsed = new URL(String(url || ""), location.origin);
+    parsed.searchParams.set("_retry", suffix);
+    return parsed.origin === location.origin ? `${parsed.pathname}${parsed.search}` : parsed.toString();
+  } catch {
+    const raw = String(url || "");
+    if (!raw) return "";
+    return `${raw}${raw.includes("?") ? "&" : "?"}_retry=${encodeURIComponent(suffix)}`;
+  }
+}
+
 function switchToCurrentSource(autoPlay = false) {
   const source = getCurrentSource();
   if (!source) {
@@ -448,10 +500,43 @@ function switchToCurrentSource(autoPlay = false) {
   }
 }
 
+async function recoverDirectPlaybackSource() {
+  if (!state.media?.fileId || state.sourceRecovering || state.directRecoverAttempted) {
+    return false;
+  }
+  state.sourceRecovering = true;
+  state.directRecoverAttempted = true;
+  setHint("直连通道异常，正在自动修复...");
+  try {
+    await ensureDirectS3Bridge(true);
+    const recovered = await resolveMediaByFileId(state.media.fileId, state.media.name, state.media);
+    const token = String(Date.now());
+    state.sourceCandidates = (recovered.candidateUrls || [])
+      .map((url) => appendRetryParam(url, token))
+      .filter(Boolean);
+    if (!state.sourceCandidates.length && recovered.url) {
+      state.sourceCandidates = [appendRetryParam(recovered.url, token)];
+    }
+    state.sourceIndex = 0;
+    switchToCurrentSource(true);
+    setHint("直连通道已重试，正在重新加载...");
+    return true;
+  } catch (error) {
+    setHint(`直连修复失败：${error.message || "未知错误"}`);
+    return false;
+  } finally {
+    state.sourceRecovering = false;
+  }
+}
+
 function tryNextSourceAfterError() {
   const next = state.sourceIndex + 1;
   if (next >= state.sourceCandidates.length) {
-    setHint("当前视频所有地址均播放失败");
+    recoverDirectPlaybackSource().then((ok) => {
+      if (!ok) {
+        setHint("当前视频所有地址均播放失败");
+      }
+    });
     return;
   }
   state.sourceIndex = next;
@@ -470,6 +555,12 @@ async function resolveMediaByFileId(fileId, fileName = "", fromMedia = null) {
   if (playUrl && !list.includes(playUrl)) {
     list.unshift(playUrl);
   }
+  if (playUrl) {
+    const retryUrl = appendRetryParam(playUrl, "seed");
+    if (retryUrl && !list.includes(retryUrl)) {
+      list.push(retryUrl);
+    }
+  }
   return {
     id: fromMedia?.id || `${fileId}-${Date.now()}`,
     fileId,
@@ -482,6 +573,8 @@ async function resolveMediaByFileId(fileId, fileName = "", fromMedia = null) {
 
 async function setMedia(media, broadcast) {
   state.media = media;
+  state.directRecoverAttempted = false;
+  state.sourceRecovering = false;
   clearDanmakuLayer();
   state.sourceCandidates = (media.candidateUrls || []).filter(Boolean);
   if (!state.sourceCandidates.length && media.url) {
@@ -631,10 +724,13 @@ function showFullscreenDanmakuBar(autoHide = true) {
   const plugin = getFullscreenDanmakuPlugin();
   if (!plugin?.root) return;
   plugin.root.classList.remove("hidden", "auto-hidden");
+  state.dp?.container?.classList?.add("dplayer-danmaku-plugin-active");
   clearFullscreenBarTimer();
   if (!autoHide) return;
+  if (plugin.input && document.activeElement === plugin.input) return;
   state.fullscreenBarTimer = setTimeout(() => {
     plugin.root.classList.add("auto-hidden");
+    state.dp?.container?.classList?.remove("dplayer-danmaku-plugin-active");
   }, FULLSCREEN_DANMAKU_AUTO_HIDE_MS);
 }
 
@@ -644,6 +740,7 @@ function hideFullscreenDanmakuBar() {
   clearFullscreenBarTimer();
   plugin.root.classList.remove("auto-hidden");
   plugin.root.classList.add("hidden");
+  state.dp?.container?.classList?.remove("dplayer-danmaku-plugin-active");
 }
 
 async function lockLandscapeIfNeeded() {

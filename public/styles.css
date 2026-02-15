@@ -390,11 +390,11 @@ input[type="color"] {
     0 0 8px rgba(0, 0, 0, 0.8);
 }
 
-.fullscreen-danmaku-bar {
+.dplayer-danmaku-plugin-bar {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  bottom: max(12px, env(safe-area-inset-bottom));
+  bottom: max(56px, calc(env(safe-area-inset-bottom) + 12px));
   width: min(760px, calc(100% - 16px));
   display: flex;
   align-items: center;
@@ -404,13 +404,14 @@ input[type="color"] {
   border: 1px solid rgba(255, 255, 255, 0.26);
   background: rgba(4, 10, 19, 0.76);
   opacity: 1;
-  z-index: 30;
+  z-index: 120;
+  pointer-events: auto;
   transition:
     opacity 220ms ease,
     transform 220ms ease;
 }
 
-.fullscreen-danmaku-identity {
+.dplayer-danmaku-plugin-identity {
   flex: 0 0 auto;
   max-width: 30%;
   overflow: hidden;
@@ -425,19 +426,34 @@ input[type="color"] {
   line-height: 1.2;
 }
 
-.fullscreen-danmaku-bar input {
+.dplayer-danmaku-plugin-bar input {
   flex: 1;
   min-width: 120px;
 }
 
-.fullscreen-danmaku-bar .btn {
+.dplayer-danmaku-plugin-bar .btn {
   height: 36px;
 }
 
-.fullscreen-danmaku-bar.auto-hidden {
+.dplayer-danmaku-plugin-bar.auto-hidden {
   opacity: 0;
   pointer-events: none;
   transform: translateX(-50%) translateY(8px);
+}
+
+.dplayer-danmaku-plugin-toggle {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  min-width: 28px;
+}
+
+.dplayer-danmaku-plugin-toggle:hover {
+  color: #2ee8ad;
+}
+
+.dplayer-danmaku-plugin-active .dplayer-controller-mask {
+  pointer-events: none;
 }
 
 .chat-panel {
@@ -568,7 +584,7 @@ input[type="color"] {
     text-align: left;
   }
 
-  .fullscreen-danmaku-identity {
+  .dplayer-danmaku-plugin-identity {
     display: none;
   }
 }
