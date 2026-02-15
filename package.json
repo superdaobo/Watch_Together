@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.894.0",
+    "@aws-sdk/s3-request-presigner": "^3.894.0",
     "@smithy/hash-node": "^4.2.5",
     "@smithy/protocol-http": "^5.3.5",
     "@smithy/signature-v4": "^5.3.5",

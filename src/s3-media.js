@@ -1,5 +1,6 @@
 const path = require("node:path");
-const { S3Client, HeadObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
+const { S3Client, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { SignatureV4 } = require("@smithy/signature-v4");
 const { HttpRequest } = require("@smithy/protocol-http");
 const { Hash } = require("@smithy/hash-node");
@@ -77,22 +78,6 @@ function normalizePlayMode(rawMode) {
   const mode = String(rawMode || "").trim().toLowerCase();
   if (mode === "signed-header") return "signed-header";
   return "presigned-url";
-}
-
-function buildQueryString(query = {}) {
-  const parts = [];
-  for (const [key, value] of Object.entries(query)) {
-    if (value == null) continue;
-    const encodedKey = encodeURIComponent(String(key));
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        parts.push(`${encodedKey}=${encodeURIComponent(String(item))}`);
-      }
-      continue;
-    }
-    parts.push(`${encodedKey}=${encodeURIComponent(String(value))}`);
-  }
-  return parts.join("&");
 }
 
 class S3MediaService {
@@ -202,22 +187,16 @@ class S3MediaService {
     if (!key) {
       throw new Error("缺少 fileId");
     }
-    const endpoint = this.getEndpointUrl();
     const method = sanitizeMethod(options.method);
+    if (method !== "GET") {
+      throw new Error("预签名直连仅支持 GET 方法");
+    }
     const expiresIn = Math.min(86400, Math.max(60, Math.floor(Number(options.expiresIn || this.urlExpireSeconds))));
-    const request = new HttpRequest({
-      protocol: endpoint.protocol,
-      hostname: endpoint.hostname,
-      port: endpoint.port ? Number(endpoint.port) : undefined,
-      method,
-      path: this.buildObjectPath(key),
-      headers: {
-        host: endpoint.host
-      }
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key
     });
-    const presigned = await this.getSigner().presign(request, { expiresIn });
-    const queryString = buildQueryString(presigned.query || {});
-    return queryString ? `${endpoint.origin}${presigned.path}?${queryString}` : `${endpoint.origin}${presigned.path}`;
+    return getSignedUrl(this.getClient(), command, { expiresIn });
   }
 
   async signObjectRequest(fileId, options = {}) {
