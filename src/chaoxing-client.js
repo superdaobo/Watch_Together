@@ -79,10 +79,18 @@ function normalizeRemoteMediaUrl(rawUrl) {
     return "";
   }
   try {
-    return new URL(cleaned).toString();
+    const url = new URL(cleaned);
+    if (url.protocol === "http:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+      url.protocol = "https:";
+    }
+    return url.toString();
   } catch {
     try {
-      return new URL(encodeURI(cleaned)).toString();
+      const url = new URL(encodeURI(cleaned));
+      if (url.protocol === "http:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+        url.protocol = "https:";
+      }
+      return url.toString();
     } catch {
       return "";
     }
@@ -330,7 +338,12 @@ class ChaoxingClient {
       throw new Error("缺少 fileId");
     }
     const payload = await this.requestDownload(`/screen/note_note/files/status/${normalized}`);
-    const candidates = buildPlayableCandidates(payload);
+    const rawCandidates = buildPlayableCandidates(payload);
+    if (!rawCandidates.length) {
+      throw new Error(`鑾峰彇鎾斁閾炬帴澶辫触: ${payload.msg || "鏃犲彲鐢ㄦ挱鏀惧湴鍧€"}`);
+    }
+    const resolvedCandidates = await this.resolveDirectCandidates(rawCandidates);
+    const candidates = resolvedCandidates.length ? resolvedCandidates : rawCandidates;
     if (!candidates.length) {
       throw new Error(`获取播放链接失败: ${payload.msg || "无可用播放地址"}`);
     }
@@ -339,10 +352,72 @@ class ChaoxingClient {
       previewUrl: normalizeRemoteMediaUrl(payload.url || ""),
       downloadUrl: normalizeRemoteMediaUrl(payload.download || ""),
       candidateUrls: candidates,
+      rawCandidateUrls: rawCandidates,
       duration: Number(payload.duration || 0),
       fileStatus: payload.fileStatus || "",
       requiresCookie: false
     };
+  }
+
+  async resolveDirectCandidates(rawCandidates = []) {
+    const unique = [];
+    for (const candidate of rawCandidates) {
+      const url = normalizeRemoteMediaUrl(candidate);
+      if (!url || unique.includes(url)) continue;
+      unique.push(url);
+    }
+    if (!unique.length) {
+      return [];
+    }
+
+    const resolved = [];
+    for (const url of unique) {
+      const finalUrl = await this.resolveDirectUrl(url);
+      if (finalUrl && !resolved.includes(finalUrl)) {
+        resolved.push(finalUrl);
+      }
+    }
+    return resolved;
+  }
+
+  async resolveDirectUrl(rawUrl) {
+    const targetUrl = normalizeRemoteMediaUrl(rawUrl);
+    if (!targetUrl) {
+      return "";
+    }
+
+    try {
+      this.validateReady();
+      const cookie = await this.ensureCookie();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      try {
+        const response = await fetch(targetUrl, {
+          method: "GET",
+          headers: {
+            Accept: "*/*",
+            Range: "bytes=0-0",
+            Cookie: cookie,
+            Referer: REFERER,
+            "User-Agent": USER_AGENT
+          },
+          redirect: "follow",
+          signal: controller.signal
+        });
+        if (response.body) {
+          await response.body.cancel().catch(() => {});
+        }
+        if (response.status >= 200 && response.status < 400) {
+          return normalizeRemoteMediaUrl(response.url || targetUrl);
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch {
+      // ignore
+    }
+
+    return "";
   }
 
   getSafeConfig() {
