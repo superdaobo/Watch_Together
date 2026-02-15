@@ -463,6 +463,34 @@ function ensurePlayer(sourceUrl = "") {
   if (!window.DPlayer) {
     throw new Error("DPlayer 资源加载失败");
   }
+  const customType = {
+    mpegts(video) {
+      if (!window.mpegts || !window.mpegts.isSupported()) return;
+      destroyMpegtsPlayer();
+      const sourceUrl = new URL(video.src || "", location.origin).toString();
+      const player = window.mpegts.createPlayer(
+        {
+          type: "mpegts",
+          url: sourceUrl,
+          isLive: false
+        },
+        {
+          enableWorker: false,
+          autoCleanupSourceBuffer: true
+        }
+      );
+      state.mpegtsPlayer = player;
+      player.on(window.mpegts.Events.ERROR, (type, detail) => {
+        if (String(type) === "NetworkError") {
+          setHint(`TS 播放网络错误：${detail || "unknown"}，正在切换备用源...`);
+          tryNextSourceAfterError().catch(() => {});
+        }
+      });
+      player.attachMediaElement(video);
+      player.load();
+      player.play().catch(() => {});
+    }
+  };
   state.dp = new window.DPlayer({
     container: refs.dplayerContainer,
     autoplay: false,
@@ -472,37 +500,10 @@ function ensurePlayer(sourceUrl = "") {
     theme: "#2ee8ad",
     lang: "zh-cn",
     volume: 0.8,
-    customType: {
-      mpegts(video) {
-        if (!window.mpegts || !window.mpegts.isSupported()) return;
-        destroyMpegtsPlayer();
-        const sourceUrl = new URL(video.src || "", location.origin).toString();
-        const player = window.mpegts.createPlayer(
-          {
-            type: "mpegts",
-            url: sourceUrl,
-            isLive: false
-          },
-          {
-            enableWorker: false,
-            autoCleanupSourceBuffer: true
-          }
-        );
-        state.mpegtsPlayer = player;
-        player.on(window.mpegts.Events.ERROR, (type, detail) => {
-          if (String(type) === "NetworkError") {
-            setHint(`TS 鎾斁缃戠粶閿欒锛?{detail || "unknown"}锛屾鍦ㄥ垏鎹㈠鐢ㄦ簮...`);
-            tryNextSourceAfterError().catch(() => {});
-          }
-        });
-        player.attachMediaElement(video);
-        player.load();
-        player.play().catch(() => {});
-      }
-    },
     video: {
       url: sourceUrl || "",
-      type: guessVideoType(sourceUrl)
+      type: guessVideoType(sourceUrl),
+      customType
     }
   });
 

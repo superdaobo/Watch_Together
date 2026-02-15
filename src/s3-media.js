@@ -1,8 +1,12 @@
 const path = require("node:path");
+const dns = require("node:dns");
+const http = require("node:http");
+const https = require("node:https");
 const { S3Client, HeadObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
 const { SignatureV4 } = require("@smithy/signature-v4");
 const { HttpRequest } = require("@smithy/protocol-http");
 const { Hash } = require("@smithy/hash-node");
+const { NodeHttpHandler } = require("@smithy/node-http-handler");
 
 const EMPTY_PAYLOAD_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const SIGNED_HEADER_ALLOW_LIST = new Set([
@@ -101,6 +105,96 @@ function buildQueryString(query = {}) {
   return parts.join("&");
 }
 
+function createDnsLookupFallback() {
+  const toLookupOptions = (rawOptions) => {
+    if (typeof rawOptions === "number") {
+      return { family: rawOptions };
+    }
+    if (!rawOptions || typeof rawOptions !== "object") {
+      return {};
+    }
+    return { ...rawOptions };
+  };
+
+  const finishWithSingle = (done, lookupOptions, address, family) => {
+    if (lookupOptions.all) {
+      done(null, [{ address, family }]);
+      return;
+    }
+    done(null, address, family);
+  };
+
+  const finishWithList = (done, lookupOptions, addresses, family) => {
+    if (!Array.isArray(addresses) || addresses.length === 0) {
+      done(new Error("DNS fallback returned empty address list"));
+      return;
+    }
+    if (lookupOptions.all) {
+      done(
+        null,
+        addresses.map((address) => ({ address, family }))
+      );
+      return;
+    }
+    done(null, addresses[0], family);
+  };
+
+  return (hostname, options, callback) => {
+    let lookupOptions = options;
+    let done = callback;
+    if (typeof lookupOptions === "function") {
+      done = lookupOptions;
+      lookupOptions = {};
+    }
+    lookupOptions = toLookupOptions(lookupOptions);
+
+    dns.lookup(hostname, lookupOptions, (lookupError, address, family) => {
+      if (!lookupError) {
+        if (lookupOptions.all) {
+          done(null, address);
+          return;
+        }
+        finishWithSingle(done, lookupOptions, address, family);
+        return;
+      }
+
+      const resolve4 = (next) => {
+        dns.resolve4(hostname, (resolve4Error, addresses4) => {
+          if (!resolve4Error && Array.isArray(addresses4) && addresses4.length > 0) {
+            finishWithList(done, lookupOptions, addresses4, 4);
+            return;
+          }
+          next();
+        });
+      };
+
+      const resolve6 = (next) => {
+        dns.resolve6(hostname, (resolve6Error, addresses6) => {
+          if (!resolve6Error && Array.isArray(addresses6) && addresses6.length > 0) {
+            finishWithList(done, lookupOptions, addresses6, 6);
+            return;
+          }
+          next();
+        });
+      };
+
+      if (lookupOptions.family === 4) {
+        resolve4(() => done(lookupError));
+        return;
+      }
+      if (lookupOptions.family === 6) {
+        resolve6(() => done(lookupError));
+        return;
+      }
+      resolve4(() => {
+        resolve6(() => {
+          done(lookupError);
+        });
+      });
+    });
+  };
+}
+
 class S3MediaService {
   constructor(options = {}) {
     this.endpoint = ensureEndpoint(options.endpoint || "");
@@ -115,6 +209,15 @@ class S3MediaService {
     this.client = null;
     this.signers = new Map();
     this.endpointUrl = null;
+    this.lookup = createDnsLookupFallback();
+    this.httpAgent = new http.Agent({
+      keepAlive: true,
+      lookup: this.lookup
+    });
+    this.httpsAgent = new https.Agent({
+      keepAlive: true,
+      lookup: this.lookup
+    });
   }
 
   setRuntimeConfig(next = {}) {
@@ -151,6 +254,12 @@ class S3MediaService {
         endpoint: this.endpoint,
         region: this.region || "us-east-1",
         forcePathStyle: this.forcePathStyle,
+        requestHandler: new NodeHttpHandler({
+          httpAgent: this.httpAgent,
+          httpsAgent: this.httpsAgent,
+          connectionTimeout: 10_000,
+          socketTimeout: 120_000
+        }),
         credentials: {
           accessKeyId: this.accessKeyId,
           secretAccessKey: this.secretAccessKey
