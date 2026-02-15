@@ -10,6 +10,7 @@ const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const AES_KEY = "u2oh6Vu^HWe4_AES";
+
 const VIDEO_EXTENSIONS = new Set([
   ".mp4",
   ".mkv",
@@ -63,6 +64,41 @@ function parseJsonSafe(raw) {
   } catch {
     return null;
   }
+}
+
+function decodeHtmlEntities(input) {
+  return String(input || "")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&#x2F;", "/")
+    .replaceAll("&#47;", "/");
+}
+
+function normalizeRemoteMediaUrl(rawUrl) {
+  const cleaned = decodeHtmlEntities(String(rawUrl || "").trim());
+  if (!cleaned) {
+    return "";
+  }
+  try {
+    return new URL(cleaned).toString();
+  } catch {
+    try {
+      return new URL(encodeURI(cleaned)).toString();
+    } catch {
+      return "";
+    }
+  }
+}
+
+function buildPlayableCandidates(payload = {}) {
+  const list = [];
+  const preview = normalizeRemoteMediaUrl(payload.url || "");
+  const download = normalizeRemoteMediaUrl(payload.download || "");
+  [preview, download].forEach((item) => {
+    if (item && !list.includes(item)) {
+      list.push(item);
+    }
+  });
+  return list;
 }
 
 class ChaoxingClient {
@@ -294,31 +330,19 @@ class ChaoxingClient {
       throw new Error("缺少 fileId");
     }
     const payload = await this.requestDownload(`/screen/note_note/files/status/${normalized}`);
-    const download = payload.download || payload.url || "";
-    if (!download) {
-      throw new Error(`获取播放链接失败: ${payload.msg || "无可用下载地址"}`);
+    const candidates = buildPlayableCandidates(payload);
+    if (!candidates.length) {
+      throw new Error(`获取播放链接失败: ${payload.msg || "无可用播放地址"}`);
     }
     return {
-      url: download,
+      url: candidates[0],
+      previewUrl: normalizeRemoteMediaUrl(payload.url || ""),
+      downloadUrl: normalizeRemoteMediaUrl(payload.download || ""),
+      candidateUrls: candidates,
       duration: Number(payload.duration || 0),
       fileStatus: payload.fileStatus || "",
       requiresCookie: false
     };
-  }
-
-  async getPlaybackHeaders(rangeHeaderValue = "") {
-    this.validateReady();
-    const cookie = await this.ensureCookie();
-    const headers = {
-      Accept: "*/*",
-      Referer: REFERER,
-      "User-Agent": USER_AGENT,
-      Cookie: cookie
-    };
-    if (rangeHeaderValue) {
-      headers.Range = String(rangeHeaderValue);
-    }
-    return headers;
   }
 
   getSafeConfig() {

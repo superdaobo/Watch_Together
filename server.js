@@ -3,7 +3,6 @@ require("dotenv").config();
 const crypto = require("node:crypto");
 const http = require("node:http");
 const path = require("node:path");
-const { Readable } = require("node:stream");
 
 const cors = require("cors");
 const express = require("express");
@@ -29,9 +28,7 @@ function parseCookieHeader(rawCookieHeader = "") {
     .filter(Boolean)
     .reduce((acc, part) => {
       const idx = part.indexOf("=");
-      if (idx <= 0) {
-        return acc;
-      }
+      if (idx <= 0) return acc;
       const key = part.slice(0, idx).trim();
       const value = decodeURIComponent(part.slice(idx + 1).trim());
       acc[key] = value;
@@ -54,21 +51,14 @@ function clearExpiredSessions() {
 }
 
 function hasValidAccessToken(token) {
-  if (!token) {
-    return false;
-  }
+  if (!token) return false;
   clearExpiredSessions();
   const meta = accessSessions.get(token);
-  if (!meta) {
-    return false;
-  }
-  return meta.expiresAt > Date.now();
+  return Boolean(meta && meta.expiresAt > Date.now());
 }
 
 function touchAccessToken(token) {
-  if (!hasValidAccessToken(token)) {
-    return false;
-  }
+  if (!hasValidAccessToken(token)) return false;
   accessSessions.set(token, { expiresAt: Date.now() + ACCESS_TTL_MS });
   return true;
 }
@@ -88,24 +78,14 @@ function writeAccessCookie(res, token) {
     "HttpOnly",
     "SameSite=Lax"
   ];
-  if (secure) {
-    parts.push("Secure");
-  }
+  if (secure) parts.push("Secure");
   res.setHeader("Set-Cookie", parts.join("; "));
 }
 
 function clearAccessCookie(res) {
   const secure = process.env.NODE_ENV === "production";
-  const parts = [
-    `${ACCESS_COOKIE_NAME}=`,
-    "Path=/",
-    "Max-Age=0",
-    "HttpOnly",
-    "SameSite=Lax"
-  ];
-  if (secure) {
-    parts.push("Secure");
-  }
+  const parts = [`${ACCESS_COOKIE_NAME}=`, "Path=/", "Max-Age=0", "HttpOnly", "SameSite=Lax"];
+  if (secure) parts.push("Secure");
   res.setHeader("Set-Cookie", parts.join("; "));
 }
 
@@ -124,9 +104,7 @@ function requireAccess(req, res, next) {
 
 function parseAdditionJson() {
   const raw = String(process.env.CX_ADDITION_JSON || "").trim();
-  if (!raw) {
-    return {};
-  }
+  if (!raw) return {};
   try {
     return JSON.parse(raw);
   } catch {
@@ -206,9 +184,7 @@ app.post("/api/access/login", (req, res) => {
 app.get("/api/access/status", (req, res) => {
   const token = readAccessTokenFromRequest(req);
   const authorized = hasValidAccessToken(token);
-  if (authorized) {
-    touchAccessToken(token);
-  }
+  if (authorized) touchAccessToken(token);
   res.json({ ok: true, authorized });
 });
 
@@ -286,95 +262,21 @@ app.get("/api/cx/link", async (req, res) => {
       });
       return;
     }
-
     const link = await chaoxingClient.getPlayableLink(fileId);
     res.json({
       ok: true,
       fileId,
       duration: link.duration,
       fileStatus: link.fileStatus,
-      streamUrl: `/api/cx/stream?fileId=${encodeURIComponent(fileId)}`
+      url: link.url,
+      previewUrl: link.previewUrl || "",
+      downloadUrl: link.downloadUrl || "",
+      candidateUrls: link.candidateUrls || []
     });
   } catch (error) {
     res.status(500).json({
       ok: false,
       message: error.message || "获取播放地址失败"
-    });
-  }
-});
-
-app.get("/api/cx/stream", async (req, res) => {
-  try {
-    const fileId = String(req.query.fileId || "").trim();
-    if (!fileId) {
-      res.status(400).json({
-        ok: false,
-        message: "fileId 不能为空"
-      });
-      return;
-    }
-
-    const link = await chaoxingClient.getPlayableLink(fileId);
-    const upstreamHeaders = await chaoxingClient.getPlaybackHeaders(req.headers.range || "");
-    const upstream = await fetch(link.url, {
-      method: "GET",
-      headers: upstreamHeaders,
-      redirect: "follow"
-    });
-
-    if (upstream.status >= 400) {
-      const errorText = await upstream.text();
-      res.status(upstream.status).json({
-        ok: false,
-        message: `上游流响应失败: HTTP ${upstream.status} ${errorText.slice(0, 160)}`
-      });
-      return;
-    }
-
-    const passthroughHeaders = [
-      "content-type",
-      "content-length",
-      "content-range",
-      "accept-ranges",
-      "cache-control",
-      "etag",
-      "last-modified",
-      "expires"
-    ];
-
-    res.status(upstream.status);
-    passthroughHeaders.forEach((name) => {
-      const value = upstream.headers.get(name);
-      if (value) {
-        res.setHeader(name, value);
-      }
-    });
-    res.setHeader("x-accel-buffering", "no");
-
-    if (!upstream.body) {
-      res.end();
-      return;
-    }
-
-    const bodyStream = Readable.fromWeb(upstream.body);
-    bodyStream.on("error", (error) => {
-      if (!res.headersSent) {
-        res.status(502).json({
-          ok: false,
-          message: `流式转发失败: ${error.message}`
-        });
-      } else {
-        res.destroy(error);
-      }
-    });
-    req.on("close", () => {
-      bodyStream.destroy();
-    });
-    bodyStream.pipe(res);
-  } catch (error) {
-    res.status(500).json({
-      ok: false,
-      message: error.message || "视频流转发失败"
     });
   }
 });
