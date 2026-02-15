@@ -498,6 +498,10 @@ class S3MediaService {
       if (!presignedUrls.length) {
         throw new Error("生成预签名播放地址失败");
       }
+      const localBridgeUrl = this.buildLocalPlayUrl(key);
+      if (localBridgeUrl && !presignedUrls.includes(localBridgeUrl)) {
+        presignedUrls.push(localBridgeUrl);
+      }
       playUrl = presignedUrls[0];
       candidateUrls = presignedUrls;
     }

@@ -628,6 +628,9 @@ async function switchToCurrentSource(autoPlay = false) {
   if (!source) {
     throw new Error("没有可用播放地址");
   }
+  if (isLocalDirectBridgeUrl(source) && !state.serviceWorkerReady) {
+    await ensureDirectS3Bridge();
+  }
   const sourceType = await resolveSourceType(source);
   const dp = ensurePlayer(source);
   const currentType = String(dp.video?.dataset?.sourceType || "");
