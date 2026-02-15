@@ -297,6 +297,27 @@ input[type="color"] {
   background: #02060b;
 }
 
+body.pseudo-fullscreen-active {
+  overflow: hidden;
+}
+
+.video-stage.pseudo-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  width: 100vw;
+  height: 100vh;
+  aspect-ratio: auto;
+  border-radius: 0;
+}
+
+body.pseudo-fullscreen-mobile .video-stage.pseudo-fullscreen {
+  width: 100vh;
+  height: 100vw;
+  transform-origin: top left;
+  transform: rotate(90deg) translateY(-100%);
+}
+
 #videoEl {
   width: 100%;
   height: 100%;
@@ -374,7 +395,7 @@ input[type="color"] {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  bottom: 12px;
+  bottom: max(12px, env(safe-area-inset-bottom));
   width: min(760px, calc(100% - 16px));
   display: flex;
   gap: 8px;
@@ -382,17 +403,27 @@ input[type="color"] {
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.26);
   background: rgba(4, 10, 19, 0.76);
+  opacity: 1;
+  transition:
+    opacity 220ms ease,
+    transform 220ms ease;
 }
 
 .fullscreen-danmaku-bar input {
   flex: 1;
 }
 
-.video-stage:not(:fullscreen) .fullscreen-danmaku-bar {
+.fullscreen-danmaku-bar.auto-hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(8px);
+}
+
+.video-stage:not(:fullscreen):not(.pseudo-fullscreen) .fullscreen-danmaku-bar {
   display: none !important;
 }
 
-.video-stage:not(:-webkit-full-screen) .fullscreen-danmaku-bar {
+.video-stage:not(:-webkit-full-screen):not(.pseudo-fullscreen) .fullscreen-danmaku-bar {
   display: none !important;
 }
 

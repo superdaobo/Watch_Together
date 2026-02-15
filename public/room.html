@@ -40,7 +40,13 @@
 
         <section class="panel player-panel">
           <div id="videoStage" class="video-stage">
-            <video id="videoEl" playsinline preload="metadata"></video>
+            <video
+              id="videoEl"
+              playsinline
+              webkit-playsinline="true"
+              x5-playsinline="true"
+              preload="metadata"
+            ></video>
             <div id="danmakuLayer" class="danmaku-layer"></div>
             <div id="playerOverlayHint" class="player-overlay-hint">请从左侧选择视频文件</div>
             <div id="fullscreenDanmakuBar" class="fullscreen-danmaku-bar hidden">

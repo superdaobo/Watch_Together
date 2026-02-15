@@ -1,5 +1,7 @@
 const EMOJI_LIST = ["😀", "😂", "😎", "🥳", "😭", "❤️", "👍", "🔥", "👀", "🎉"];
 const RATE_STEPS = [0.75, 1, 1.25, 1.5, 2];
+const FULLSCREEN_DANMAKU_AUTO_HIDE_MS = 3600;
+const BLOCKED_SYNC_SEEK_INTERVAL_MS = 1800;
 
 const state = {
   socket: null,
@@ -22,7 +24,13 @@ const state = {
   sourceCandidates: [],
   sourceIndex: 0,
   hls: null,
-  relayFallbackUsed: false
+  relayFallbackUsed: false,
+  autoPlayBlocked: false,
+  blockedSyncSeekAt: 0,
+  syncPlayTask: null,
+  fullscreenBarTimer: null,
+  isMobile: false,
+  pseudoFullscreen: false
 };
 
 const refs = {
@@ -99,6 +107,119 @@ function formatBytes(bytes) {
 
 function setHint(text) {
   refs.syncHint.textContent = text;
+}
+
+function clearFullscreenBarTimer() {
+  if (!state.fullscreenBarTimer) return;
+  clearTimeout(state.fullscreenBarTimer);
+  state.fullscreenBarTimer = null;
+}
+
+function isMobileClient() {
+  const ua = navigator.userAgent || "";
+  return /Android|iPhone|iPad|iPod|Mobile|HarmonyOS|MiuiBrowser/i.test(ua) || navigator.maxTouchPoints > 1;
+}
+
+function isFullscreenMode() {
+  return (
+    state.pseudoFullscreen ||
+    document.fullscreenElement === refs.videoStage ||
+    document.webkitFullscreenElement === refs.videoStage
+  );
+}
+
+function updatePseudoFullscreenOrientationClass() {
+  if (!state.pseudoFullscreen) {
+    document.body.classList.remove("pseudo-fullscreen-mobile");
+    return;
+  }
+  const needRotate = state.isMobile && window.innerHeight > window.innerWidth;
+  document.body.classList.toggle("pseudo-fullscreen-mobile", needRotate);
+}
+
+function enterPseudoFullscreen() {
+  state.pseudoFullscreen = true;
+  refs.videoStage.classList.add("pseudo-fullscreen");
+  document.body.classList.add("pseudo-fullscreen-active");
+  updatePseudoFullscreenOrientationClass();
+}
+
+function exitPseudoFullscreen() {
+  state.pseudoFullscreen = false;
+  refs.videoStage.classList.remove("pseudo-fullscreen");
+  document.body.classList.remove("pseudo-fullscreen-active", "pseudo-fullscreen-mobile");
+}
+
+function showFullscreenDanmakuBar(autoHide = true) {
+  if (!isFullscreenMode()) return;
+  refs.fullscreenDanmakuBar.classList.remove("hidden", "auto-hidden");
+  clearFullscreenBarTimer();
+  if (!autoHide) return;
+  state.fullscreenBarTimer = setTimeout(() => {
+    refs.fullscreenDanmakuBar.classList.add("auto-hidden");
+  }, FULLSCREEN_DANMAKU_AUTO_HIDE_MS);
+}
+
+function hideFullscreenDanmakuBar() {
+  clearFullscreenBarTimer();
+  refs.fullscreenDanmakuBar.classList.add("hidden");
+  refs.fullscreenDanmakuBar.classList.remove("auto-hidden");
+}
+
+async function lockLandscapeIfNeeded() {
+  if (!state.isMobile) return;
+  const orientation = screen.orientation;
+  if (!orientation || typeof orientation.lock !== "function") return;
+  try {
+    await orientation.lock("landscape");
+  } catch {
+    // ignore unsupported environments
+  }
+}
+
+async function unlockOrientationIfNeeded() {
+  const orientation = screen.orientation;
+  if (!orientation || typeof orientation.unlock !== "function") return;
+  try {
+    orientation.unlock();
+  } catch {
+    // ignore
+  }
+}
+
+async function requestPlayWithFallback(fromSync = false) {
+  try {
+    await refs.videoEl.play();
+    state.autoPlayBlocked = false;
+    return true;
+  } catch {
+    if (fromSync && !refs.videoEl.muted) {
+      refs.videoEl.muted = true;
+      updateMuteButton();
+      try {
+        await refs.videoEl.play();
+        state.autoPlayBlocked = false;
+        setHint("移动端自动播放受限，已切为静音播放，可点静音按钮恢复声音");
+        return true;
+      } catch {
+        // ignore
+      }
+    }
+    state.autoPlayBlocked = true;
+    if (fromSync) {
+      setHint("当前设备限制自动播放，请点击播放按钮开始观看");
+    }
+    return false;
+  }
+}
+
+function requestSyncPlayIfNeeded() {
+  if (state.syncPlayTask) return;
+  state.syncPlayTask = requestPlayWithFallback(true)
+    .catch(() => false)
+    .finally(() => {
+      state.syncPlayTask = null;
+    });
 }
 
 function getQueryParam(name) {
@@ -490,6 +611,14 @@ function applyRemoteSync(syncState, forceSeek = false) {
     Number(syncState.currentTime || 0) +
     (syncState.playing ? elapsed * Number(syncState.playbackRate || 1) : 0);
   const drift = Math.abs(video.currentTime - targetTime);
+  const nowTick = performance.now();
+  const throttleBlockedSeek =
+    syncState.playing &&
+    state.autoPlayBlocked &&
+    video.paused &&
+    !forceSeek &&
+    syncState.reason !== "seek" &&
+    nowTick - state.blockedSyncSeekAt < BLOCKED_SYNC_SEEK_INTERVAL_MS;
 
   withLocalBlock(() => {
     const targetRate = Number(syncState.playbackRate || 1);
@@ -498,16 +627,21 @@ function applyRemoteSync(syncState, forceSeek = false) {
       updateRateButton();
     }
 
-    if (forceSeek || drift > state.syncDriftThreshold || syncState.reason === "seek") {
+    if (!throttleBlockedSeek && (forceSeek || drift > state.syncDriftThreshold || syncState.reason === "seek")) {
       try {
         video.currentTime = Math.max(0, targetTime);
+        if (syncState.playing && state.autoPlayBlocked && video.paused) {
+          state.blockedSyncSeekAt = nowTick;
+        }
       } catch {
         // no-op
       }
     }
 
     if (syncState.playing) {
-      if (video.paused) video.play().catch(() => {});
+      if (video.paused) {
+        requestSyncPlayIfNeeded();
+      }
     } else if (!video.paused) {
       video.pause();
     }
@@ -553,22 +687,51 @@ function sendDanmaku(fromFullscreen = false) {
         return;
       }
       input.value = "";
+      if (fromFullscreen) {
+        showFullscreenDanmakuBar(true);
+      }
     }
   );
 }
 
 async function toggleFullscreen() {
-  if (document.fullscreenElement === refs.videoStage) {
-    await document.exitFullscreen();
+  if (isFullscreenMode()) {
+    if (state.pseudoFullscreen) {
+      exitPseudoFullscreen();
+      handleFullscreenChange();
+    } else if (typeof document.exitFullscreen === "function") {
+      await document.exitFullscreen();
+    } else if (typeof document.webkitExitFullscreen === "function") {
+      document.webkitExitFullscreen();
+    }
+    await unlockOrientationIfNeeded();
     return;
   }
-  await refs.videoStage.requestFullscreen();
+  let entered = false;
+  if (typeof refs.videoStage.requestFullscreen === "function") {
+    try {
+      await refs.videoStage.requestFullscreen();
+      entered = true;
+    } catch {
+      entered = false;
+    }
+  }
+  if (!entered) {
+    enterPseudoFullscreen();
+    handleFullscreenChange();
+  }
+  await lockLandscapeIfNeeded();
 }
 
 function handleFullscreenChange() {
-  const opened = document.fullscreenElement === refs.videoStage;
-  refs.fullscreenDanmakuBar.classList.toggle("hidden", !opened);
-  if (opened) refs.fullscreenDanmakuInput.focus();
+  const opened = isFullscreenMode();
+  if (!opened) {
+    hideFullscreenDanmakuBar();
+    unlockOrientationIfNeeded().catch(() => {});
+    return;
+  }
+  showFullscreenDanmakuBar(true);
+  lockLandscapeIfNeeded().catch(() => {});
 }
 
 function joinCurrentRoom() {
@@ -619,7 +782,7 @@ function bindActions() {
   refs.playToggleBtn.addEventListener("click", () => {
     if (!state.media?.fileId) return;
     if (refs.videoEl.paused) {
-      refs.videoEl.play().catch(() => {});
+      requestPlayWithFallback(false).catch(() => {});
       return;
     }
     refs.videoEl.pause();
@@ -669,8 +832,8 @@ function bindActions() {
     toggleFullscreen().catch(() => {});
   });
   refs.fullscreenExitBtn.addEventListener("click", () => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
+    if (isFullscreenMode()) {
+      toggleFullscreen().catch(() => {});
     }
   });
 
@@ -688,6 +851,9 @@ function bindActions() {
   refs.fullscreenDanmakuInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") sendDanmaku(true);
   });
+  refs.fullscreenDanmakuInput.addEventListener("focus", () => showFullscreenDanmakuBar(false));
+  refs.fullscreenDanmakuInput.addEventListener("input", () => showFullscreenDanmakuBar(true));
+  refs.fullscreenDanmakuBar.addEventListener("pointerdown", () => showFullscreenDanmakuBar(false));
 
   refs.emojiRow.innerHTML = "";
   EMOJI_LIST.forEach((emoji) => {
@@ -703,17 +869,30 @@ function bindActions() {
   });
 
   document.addEventListener("fullscreenchange", handleFullscreenChange);
+  document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+  window.addEventListener("resize", updatePseudoFullscreenOrientationClass);
 }
 
 function bindVideoEvents() {
   refs.videoEl.addEventListener("click", () => {
+    if (isFullscreenMode()) {
+      const hiddenNow =
+        refs.fullscreenDanmakuBar.classList.contains("hidden") ||
+        refs.fullscreenDanmakuBar.classList.contains("auto-hidden");
+      if (hiddenNow) {
+        showFullscreenDanmakuBar(true);
+        return;
+      }
+      showFullscreenDanmakuBar(true);
+    }
     if (refs.videoEl.paused) {
-      refs.videoEl.play().catch(() => {});
+      requestPlayWithFallback(false).catch(() => {});
       return;
     }
     refs.videoEl.pause();
   });
   refs.videoEl.addEventListener("play", () => {
+    state.autoPlayBlocked = false;
     updatePlayButton();
     emitSync("play");
   });
@@ -845,6 +1024,11 @@ async function ensureAccess() {
 async function bootstrap() {
   const accessOk = await ensureAccess();
   if (!accessOk) return;
+
+  state.isMobile = isMobileClient();
+  refs.videoEl.setAttribute("playsinline", "");
+  refs.videoEl.setAttribute("webkit-playsinline", "true");
+  refs.videoEl.setAttribute("x5-playsinline", "true");
 
   state.roomId = String(getQueryParam("room") || localStorage.getItem("vo_room_id") || "").trim();
   state.nickname = String(getQueryParam("nick") || localStorage.getItem("vo_nickname") || "").trim();
