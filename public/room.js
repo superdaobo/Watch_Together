@@ -30,7 +30,8 @@ const state = {
   fullscreenBarTimer: null,
   playerFullscreen: false,
   isMobile: false,
-  serviceWorkerReady: false
+  serviceWorkerReady: false,
+  fullscreenDanmakuPlugin: null
 };
 
 const refs = {
@@ -54,10 +55,6 @@ const refs = {
   danmakuColorInput: document.getElementById("danmakuColorInput"),
   danmakuInput: document.getElementById("danmakuInput"),
   fullscreenBtn: document.getElementById("fullscreenBtn"),
-  fullscreenDanmakuBar: document.getElementById("fullscreenDanmakuBar"),
-  fullscreenDanmakuInput: document.getElementById("fullscreenDanmakuInput"),
-  fullscreenDanmakuSendBtn: document.getElementById("fullscreenDanmakuSendBtn"),
-  fullscreenExitBtn: document.getElementById("fullscreenExitBtn"),
   syncHint: document.getElementById("syncHint"),
   memberCount: document.getElementById("memberCount"),
   memberList: document.getElementById("memberList"),
@@ -170,9 +167,55 @@ async function ensureDirectS3Bridge() {
   state.serviceWorkerReady = true;
 }
 
+function getIdentityLabel() {
+  const name = String(state.nickname || "匿名用户");
+  const role = isController() ? "主控" : "成员";
+  return `${name} · ${role}`;
+}
+
+function getFullscreenDanmakuPlugin() {
+  return state.fullscreenDanmakuPlugin;
+}
+
+function ensureFullscreenDanmakuPlugin() {
+  if (state.fullscreenDanmakuPlugin) {
+    return state.fullscreenDanmakuPlugin;
+  }
+  const root = document.createElement("div");
+  root.className = "fullscreen-danmaku-bar hidden";
+  root.innerHTML = `
+    <span class="fullscreen-danmaku-identity"></span>
+    <input type="text" maxlength="80" placeholder="全屏弹幕输入..." />
+    <button type="button" class="btn primary">发送</button>
+    <button type="button" class="btn ghost">退出全屏</button>
+  `;
+
+  const identity = root.querySelector(".fullscreen-danmaku-identity");
+  const input = root.querySelector("input");
+  const sendBtn = root.querySelector(".btn.primary");
+  const exitBtn = root.querySelector(".btn.ghost");
+
+  refs.videoStage.appendChild(root);
+  state.fullscreenDanmakuPlugin = {
+    root,
+    identity,
+    input,
+    sendBtn,
+    exitBtn
+  };
+  return state.fullscreenDanmakuPlugin;
+}
+
+function updateFullscreenDanmakuIdentity() {
+  const plugin = getFullscreenDanmakuPlugin();
+  if (!plugin?.identity) return;
+  plugin.identity.textContent = getIdentityLabel();
+}
+
 function updateRoomHeader() {
   refs.roomTitle.textContent = `房间：${state.roomId || "--"}`;
   refs.roomSubtitle.textContent = state.nickname ? `当前用户：${state.nickname}` : "正在连接...";
+  updateFullscreenDanmakuIdentity();
 }
 
 function updateTopStatus() {
@@ -202,6 +245,7 @@ function renderMembers() {
     refs.memberList.appendChild(node);
   });
   updateTopStatus();
+  updateFullscreenDanmakuIdentity();
 }
 
 function appendChat(item) {
@@ -323,6 +367,20 @@ function ensurePlayer(sourceUrl = "") {
   video.setAttribute("playsinline", "");
   video.setAttribute("webkit-playsinline", "true");
   video.setAttribute("x5-playsinline", "true");
+
+  const fullscreenPlugin = ensureFullscreenDanmakuPlugin();
+  updateFullscreenDanmakuIdentity();
+  if (!fullscreenPlugin.root.dataset.bound) {
+    fullscreenPlugin.root.dataset.bound = "1";
+    fullscreenPlugin.sendBtn.addEventListener("click", () => sendDanmaku(true));
+    fullscreenPlugin.exitBtn.addEventListener("click", () => cancelPlayerFullscreen());
+    fullscreenPlugin.input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") sendDanmaku(true);
+    });
+    fullscreenPlugin.input.addEventListener("focus", () => showFullscreenDanmakuBar(false));
+    fullscreenPlugin.input.addEventListener("input", () => showFullscreenDanmakuBar(true));
+    fullscreenPlugin.root.addEventListener("pointerdown", () => showFullscreenDanmakuBar(false));
+  }
 
   video.addEventListener("play", () => {
     state.autoPlayBlocked = false;
@@ -561,18 +619,22 @@ function isFullscreenMode() {
 
 function showFullscreenDanmakuBar(autoHide = true) {
   if (!isFullscreenMode()) return;
-  refs.fullscreenDanmakuBar.classList.remove("hidden", "auto-hidden");
+  const plugin = getFullscreenDanmakuPlugin();
+  if (!plugin?.root) return;
+  plugin.root.classList.remove("hidden", "auto-hidden");
   clearFullscreenBarTimer();
   if (!autoHide) return;
   state.fullscreenBarTimer = setTimeout(() => {
-    refs.fullscreenDanmakuBar.classList.add("auto-hidden");
+    plugin.root.classList.add("auto-hidden");
   }, FULLSCREEN_DANMAKU_AUTO_HIDE_MS);
 }
 
 function hideFullscreenDanmakuBar() {
+  const plugin = getFullscreenDanmakuPlugin();
+  if (!plugin?.root) return;
   clearFullscreenBarTimer();
-  refs.fullscreenDanmakuBar.classList.remove("auto-hidden");
-  refs.fullscreenDanmakuBar.classList.add("hidden");
+  plugin.root.classList.remove("auto-hidden");
+  plugin.root.classList.add("hidden");
 }
 
 async function lockLandscapeIfNeeded() {
@@ -719,7 +781,9 @@ function sendDanmaku(fromFullscreen = false) {
     setHint("请先加入房间");
     return;
   }
-  const input = fromFullscreen ? refs.fullscreenDanmakuInput : refs.danmakuInput;
+  const plugin = getFullscreenDanmakuPlugin();
+  const input = fromFullscreen ? plugin?.input : refs.danmakuInput;
+  if (!input) return;
   const text = input.value.trim();
   if (!text) return;
   const videoTime = Number(state.dp?.video?.currentTime || 0);
@@ -796,21 +860,14 @@ function bindActions() {
   refs.danmakuInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") sendDanmaku(false);
   });
-  refs.fullscreenDanmakuSendBtn.addEventListener("click", () => sendDanmaku(true));
-  refs.fullscreenDanmakuInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") sendDanmaku(true);
-  });
-  refs.fullscreenDanmakuInput.addEventListener("focus", () => showFullscreenDanmakuBar(false));
-  refs.fullscreenDanmakuInput.addEventListener("input", () => showFullscreenDanmakuBar(true));
-  refs.fullscreenDanmakuBar.addEventListener("pointerdown", () => showFullscreenDanmakuBar(false));
   refs.videoStage.addEventListener("pointerup", (event) => {
     if (!isFullscreenMode()) return;
-    if (event.target?.closest?.("#fullscreenDanmakuBar")) return;
+    const pluginRoot = getFullscreenDanmakuPlugin()?.root;
+    if (pluginRoot && event.target instanceof Node && pluginRoot.contains(event.target)) return;
     showFullscreenDanmakuBar(true);
   });
 
   refs.fullscreenBtn.addEventListener("click", () => requestPlayerFullscreen());
-  refs.fullscreenExitBtn.addEventListener("click", () => cancelPlayerFullscreen());
 
   refs.emojiRow.innerHTML = "";
   EMOJI_LIST.forEach((emoji) => {
