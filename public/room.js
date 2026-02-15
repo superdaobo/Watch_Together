@@ -1,5 +1,4 @@
 const EMOJI_LIST = ["😀", "😂", "😎", "🥳", "😭", "❤️", "👍", "🔥", "👀", "🎉"];
-const RATE_STEPS = [0.75, 1, 1.25, 1.5, 2];
 const FULLSCREEN_DANMAKU_AUTO_HIDE_MS = 3600;
 const BLOCKED_SYNC_SEEK_INTERVAL_MS = 1800;
 
@@ -16,21 +15,22 @@ const state = {
   folderStack: [],
   media: null,
   pendingSync: null,
-  blockLocalUntil: 0,
   syncDriftThreshold: 0.4,
+  blockLocalUntil: 0,
   draggingProgress: false,
-  danmakuTracks: [],
   heartbeatTimer: null,
+  danmakuTracks: [],
   sourceCandidates: [],
   sourceIndex: 0,
-  hls: null,
-  relayFallbackUsed: false,
+  dp: null,
+  playerReady: false,
   autoPlayBlocked: false,
   blockedSyncSeekAt: 0,
   syncPlayTask: null,
   fullscreenBarTimer: null,
+  playerFullscreen: false,
   isMobile: false,
-  pseudoFullscreen: false
+  serviceWorkerReady: false
 };
 
 const refs = {
@@ -47,21 +47,13 @@ const refs = {
   folderPathText: document.getElementById("folderPathText"),
   fileList: document.getElementById("fileList"),
   videoStage: document.getElementById("videoStage"),
-  videoEl: document.getElementById("videoEl"),
+  dplayerContainer: document.getElementById("dplayerContainer"),
   danmakuLayer: document.getElementById("danmakuLayer"),
   playerOverlayHint: document.getElementById("playerOverlayHint"),
-  playToggleBtn: document.getElementById("playToggleBtn"),
-  currentTimeLabel: document.getElementById("currentTimeLabel"),
-  progressRange: document.getElementById("progressRange"),
-  durationLabel: document.getElementById("durationLabel"),
-  rateBtn: document.getElementById("rateBtn"),
-  volumeRange: document.getElementById("volumeRange"),
-  muteBtn: document.getElementById("muteBtn"),
-  fullscreenBtn: document.getElementById("fullscreenBtn"),
   sendDanmakuBtn: document.getElementById("sendDanmakuBtn"),
   danmakuColorInput: document.getElementById("danmakuColorInput"),
   danmakuInput: document.getElementById("danmakuInput"),
-  sendDanmakuBtn2: document.getElementById("sendDanmakuBtn2"),
+  fullscreenBtn: document.getElementById("fullscreenBtn"),
   fullscreenDanmakuBar: document.getElementById("fullscreenDanmakuBar"),
   fullscreenDanmakuInput: document.getElementById("fullscreenDanmakuInput"),
   fullscreenDanmakuSendBtn: document.getElementById("fullscreenDanmakuSendBtn"),
@@ -79,17 +71,36 @@ function nowMs() {
   return Date.now();
 }
 
-function formatClock(seconds = 0) {
-  const raw = Number(seconds);
-  if (!Number.isFinite(raw) || raw <= 0) return "00:00";
-  const whole = Math.floor(raw);
-  const h = Math.floor(whole / 3600);
-  const m = Math.floor((whole % 3600) / 60);
-  const s = whole % 60;
-  if (h > 0) {
-    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  }
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+function setHint(text) {
+  refs.syncHint.textContent = String(text || "");
+}
+
+function withLocalBlock(fn) {
+  state.blockLocalUntil = performance.now() + 420;
+  fn();
+}
+
+function isController() {
+  return Boolean(state.selfId && state.controllerId && state.selfId === state.controllerId);
+}
+
+function isMobileClient() {
+  const ua = navigator.userAgent || "";
+  return /Android|iPhone|iPad|iPod|Mobile|HarmonyOS|MiuiBrowser/i.test(ua) || navigator.maxTouchPoints > 1;
+}
+
+function getQueryParam(name) {
+  return new URLSearchParams(location.search).get(name) || "";
+}
+
+function randomFrom(list) {
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+function generateRandomNickname() {
+  const prefix = ["星河", "晚风", "柠檬", "山海", "橘猫", "浮光", "灯塔", "云雀", "青柠", "轻舟"];
+  const suffix = ["同学", "队友", "观众", "影迷", "旅人", "玩家", "学者", "老师"];
+  return `${randomFrom(prefix)}${randomFrom(suffix)}${Math.floor(Math.random() * 90 + 10)}`;
 }
 
 function formatBytes(bytes) {
@@ -105,135 +116,11 @@ function formatBytes(bytes) {
   return `${value.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
 }
 
-function setHint(text) {
-  refs.syncHint.textContent = text;
-}
-
-function clearFullscreenBarTimer() {
-  if (!state.fullscreenBarTimer) return;
-  clearTimeout(state.fullscreenBarTimer);
-  state.fullscreenBarTimer = null;
-}
-
-function isMobileClient() {
-  const ua = navigator.userAgent || "";
-  return /Android|iPhone|iPad|iPod|Mobile|HarmonyOS|MiuiBrowser/i.test(ua) || navigator.maxTouchPoints > 1;
-}
-
-function isFullscreenMode() {
-  return (
-    state.pseudoFullscreen ||
-    document.fullscreenElement === refs.videoStage ||
-    document.webkitFullscreenElement === refs.videoStage
-  );
-}
-
-function updatePseudoFullscreenOrientationClass() {
-  if (!state.pseudoFullscreen) {
-    document.body.classList.remove("pseudo-fullscreen-mobile");
-    return;
-  }
-  const needRotate = state.isMobile && window.innerHeight > window.innerWidth;
-  document.body.classList.toggle("pseudo-fullscreen-mobile", needRotate);
-}
-
-function enterPseudoFullscreen() {
-  state.pseudoFullscreen = true;
-  refs.videoStage.classList.add("pseudo-fullscreen");
-  document.body.classList.add("pseudo-fullscreen-active");
-  updatePseudoFullscreenOrientationClass();
-}
-
-function exitPseudoFullscreen() {
-  state.pseudoFullscreen = false;
-  refs.videoStage.classList.remove("pseudo-fullscreen");
-  document.body.classList.remove("pseudo-fullscreen-active", "pseudo-fullscreen-mobile");
-}
-
-function showFullscreenDanmakuBar(autoHide = true) {
-  if (!isFullscreenMode()) return;
-  refs.fullscreenDanmakuBar.classList.remove("hidden", "auto-hidden");
-  clearFullscreenBarTimer();
-  if (!autoHide) return;
-  state.fullscreenBarTimer = setTimeout(() => {
-    refs.fullscreenDanmakuBar.classList.add("auto-hidden");
-  }, FULLSCREEN_DANMAKU_AUTO_HIDE_MS);
-}
-
-function hideFullscreenDanmakuBar() {
-  clearFullscreenBarTimer();
-  refs.fullscreenDanmakuBar.classList.add("hidden");
-  refs.fullscreenDanmakuBar.classList.remove("auto-hidden");
-}
-
-async function lockLandscapeIfNeeded() {
-  if (!state.isMobile) return;
-  const orientation = screen.orientation;
-  if (!orientation || typeof orientation.lock !== "function") return;
-  try {
-    await orientation.lock("landscape");
-  } catch {
-    // ignore unsupported environments
-  }
-}
-
-async function unlockOrientationIfNeeded() {
-  const orientation = screen.orientation;
-  if (!orientation || typeof orientation.unlock !== "function") return;
-  try {
-    orientation.unlock();
-  } catch {
-    // ignore
-  }
-}
-
-async function requestPlayWithFallback(fromSync = false) {
-  try {
-    await refs.videoEl.play();
-    state.autoPlayBlocked = false;
-    return true;
-  } catch {
-    if (fromSync && !refs.videoEl.muted) {
-      refs.videoEl.muted = true;
-      updateMuteButton();
-      try {
-        await refs.videoEl.play();
-        state.autoPlayBlocked = false;
-        setHint("移动端自动播放受限，已切为静音播放，可点静音按钮恢复声音");
-        return true;
-      } catch {
-        // ignore
-      }
-    }
-    state.autoPlayBlocked = true;
-    if (fromSync) {
-      setHint("当前设备限制自动播放，请点击播放按钮开始观看");
-    }
-    return false;
-  }
-}
-
-function requestSyncPlayIfNeeded() {
-  if (state.syncPlayTask) return;
-  state.syncPlayTask = requestPlayWithFallback(true)
-    .catch(() => false)
-    .finally(() => {
-      state.syncPlayTask = null;
-    });
-}
-
-function getQueryParam(name) {
-  return new URLSearchParams(location.search).get(name) || "";
-}
-
-function randomFrom(list) {
-  return list[Math.floor(Math.random() * list.length)];
-}
-
-function generateRandomNickname() {
-  const prefix = ["星河", "晚风", "柠檬", "山海", "橘猫", "浮光", "灯塔", "云雀", "鲸落", "青柚"];
-  const suffix = ["同学", "队友", "观众", "影迷", "旅人", "玩家", "探长", "学者"];
-  return `${randomFrom(prefix)}${randomFrom(suffix)}${Math.floor(Math.random() * 90 + 10)}`;
+function guessVideoType(url) {
+  const raw = String(url || "").toLowerCase();
+  if (raw.includes(".m3u8")) return "hls";
+  if (raw.includes(".flv")) return "flv";
+  return "auto";
 }
 
 async function fetchJson(url, options = {}) {
@@ -243,18 +130,44 @@ async function fetchJson(url, options = {}) {
   });
   const json = await response.json().catch(() => ({}));
   if (!response.ok || json.ok === false) {
-    throw new Error(json.message || `请求失败：${response.status}`);
+    throw new Error(json.message || `请求失败: ${response.status}`);
   }
   return json;
 }
 
-function isController() {
-  return Boolean(state.selfId && state.controllerId && state.selfId === state.controllerId);
+function waitForController(timeoutMs = 5000) {
+  if (navigator.serviceWorker?.controller) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve(Boolean(navigator.serviceWorker?.controller));
+    }, timeoutMs);
+    const onChange = () => {
+      cleanup();
+      resolve(Boolean(navigator.serviceWorker?.controller));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      navigator.serviceWorker?.removeEventListener?.("controllerchange", onChange);
+    };
+    navigator.serviceWorker?.addEventListener?.("controllerchange", onChange, { once: true });
+  });
 }
 
-function withLocalBlock(fn) {
-  state.blockLocalUntil = performance.now() + 420;
-  fn();
+async function ensureDirectS3Bridge() {
+  if (!("serviceWorker" in navigator)) {
+    throw new Error("当前浏览器不支持 Service Worker，无法直连 S3 播放");
+  }
+  const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+  registration.waiting?.postMessage?.({ type: "SKIP_WAITING" });
+  await navigator.serviceWorker.ready;
+  if (!navigator.serviceWorker.controller) {
+    const ok = await waitForController(4500);
+    if (!ok) {
+      throw new Error("S3 直连桥初始化失败，请刷新页面重试");
+    }
+  }
+  state.serviceWorkerReady = true;
 }
 
 function updateRoomHeader() {
@@ -272,29 +185,8 @@ function updateTopStatus() {
   refs.controllerState.textContent = `主控：${controllerName}`;
 }
 
-function updatePlayButton() {
-  refs.playToggleBtn.textContent = refs.videoEl.paused ? "播放" : "暂停";
-}
-
-function updateMuteButton() {
-  refs.muteBtn.textContent = refs.videoEl.muted ? "取消静音" : "静音";
-}
-
-function updateRateButton() {
-  refs.rateBtn.textContent = `${refs.videoEl.playbackRate.toFixed(2)}x`;
-}
-
 function updateOverlayHint() {
   refs.playerOverlayHint.classList.toggle("hidden", Boolean(state.media?.fileId));
-}
-
-function setControlTimeUI(current, duration) {
-  refs.currentTimeLabel.textContent = formatClock(current);
-  refs.durationLabel.textContent = formatClock(duration);
-  if (!state.draggingProgress) {
-    const ratio = duration > 0 ? current / duration : 0;
-    refs.progressRange.value = String(Math.max(0, Math.min(1000, Math.round(ratio * 1000))));
-  }
 }
 
 function renderMembers() {
@@ -319,7 +211,8 @@ function appendChat(item) {
   const head = document.createElement("div");
   head.className = "chat-head";
   const date = new Date(item.createdAt);
-  head.textContent = `${item.nickname} · ${String(date.getHours()).padStart(2, "0")}:${String(
+  const typeLabel = item.type === "danmaku" ? "弹幕镜像" : "消息";
+  head.textContent = `${item.nickname} · ${typeLabel} · ${String(date.getHours()).padStart(2, "0")}:${String(
     date.getMinutes()
   ).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
 
@@ -371,7 +264,7 @@ function spawnDanmaku(item) {
   const h = Math.max(layer.clientHeight, 160);
   const trackHeight = 34;
   const trackCount = Math.max(4, Math.floor(h / trackHeight) - 1);
-  const duration = Math.max(6400, Math.min(12500, 8200 + item.text.length * 60));
+  const duration = Math.max(6400, Math.min(12500, 8200 + String(item.text || "").length * 60));
   const trackIndex = pickDanmakuTrack(trackCount, duration);
   const top = 8 + trackIndex * trackHeight;
 
@@ -404,6 +297,343 @@ function refreshFolderPathText() {
 
 function currentFolder() {
   return state.folderStack[state.folderStack.length - 1] || { id: state.rootFolderId, name: "根目录" };
+}
+
+function ensurePlayer(sourceUrl = "") {
+  if (state.dp) return state.dp;
+  if (!window.DPlayer) {
+    throw new Error("DPlayer 资源加载失败");
+  }
+  state.dp = new window.DPlayer({
+    container: refs.dplayerContainer,
+    autoplay: false,
+    hotkey: true,
+    mutex: true,
+    loop: false,
+    theme: "#2ee8ad",
+    lang: "zh-cn",
+    volume: 0.8,
+    video: {
+      url: sourceUrl || "",
+      type: guessVideoType(sourceUrl)
+    }
+  });
+
+  const video = state.dp.video;
+  video.setAttribute("playsinline", "");
+  video.setAttribute("webkit-playsinline", "true");
+  video.setAttribute("x5-playsinline", "true");
+
+  video.addEventListener("play", () => {
+    state.autoPlayBlocked = false;
+    emitSync("play");
+  });
+  video.addEventListener("pause", () => {
+    emitSync("pause");
+  });
+  video.addEventListener("seeked", () => {
+    emitSync("seek");
+  });
+  video.addEventListener("ratechange", () => {
+    emitSync("ratechange");
+  });
+  video.addEventListener("error", () => {
+    tryNextSourceAfterError();
+  });
+  video.addEventListener("loadedmetadata", () => {
+    state.playerReady = true;
+    if (state.pendingSync) {
+      applyRemoteSync(state.pendingSync, true);
+      state.pendingSync = null;
+    }
+  });
+
+  state.dp.on("fullscreen", () => handlePlayerFullscreen(true));
+  state.dp.on("fullscreen_cancel", () => handlePlayerFullscreen(false));
+  state.dp.on("webfullscreen", () => handlePlayerFullscreen(true));
+  state.dp.on("webfullscreen_cancel", () => handlePlayerFullscreen(false));
+
+  return state.dp;
+}
+
+function getCurrentSource() {
+  if (!state.sourceCandidates.length) return "";
+  return state.sourceCandidates[state.sourceIndex] || "";
+}
+
+function switchToCurrentSource(autoPlay = false) {
+  const source = getCurrentSource();
+  if (!source) {
+    throw new Error("没有可用播放地址");
+  }
+  const dp = ensurePlayer(source);
+  if (dp.video?.src !== source) {
+    dp.switchVideo({
+      url: source,
+      type: guessVideoType(source)
+    });
+  }
+  state.playerReady = false;
+  if (autoPlay) {
+    requestPlayWithFallback(false).catch(() => {});
+  } else {
+    dp.pause();
+  }
+}
+
+function tryNextSourceAfterError() {
+  const next = state.sourceIndex + 1;
+  if (next >= state.sourceCandidates.length) {
+    setHint("当前视频所有地址均播放失败");
+    return;
+  }
+  state.sourceIndex = next;
+  setHint(`当前地址失败，切换备用地址 ${next + 1}/${state.sourceCandidates.length}...`);
+  try {
+    switchToCurrentSource(true);
+  } catch (error) {
+    setHint(error.message);
+  }
+}
+
+async function resolveMediaByFileId(fileId, fileName = "", fromMedia = null) {
+  const result = await fetchJson(`/api/cx/link?fileId=${encodeURIComponent(fileId)}`);
+  const playUrl = String(result.playUrl || result.url || "");
+  const list = Array.isArray(result.candidateUrls) ? result.candidateUrls.filter(Boolean) : [];
+  if (playUrl && !list.includes(playUrl)) {
+    list.unshift(playUrl);
+  }
+  return {
+    id: fromMedia?.id || `${fileId}-${Date.now()}`,
+    fileId,
+    name: fileName || fromMedia?.name || "未命名视频",
+    duration: Number(result.duration || fromMedia?.duration || 0),
+    candidateUrls: list,
+    url: playUrl || list[0] || ""
+  };
+}
+
+async function setMedia(media, broadcast) {
+  state.media = media;
+  clearDanmakuLayer();
+  state.sourceCandidates = (media.candidateUrls || []).filter(Boolean);
+  if (!state.sourceCandidates.length && media.url) {
+    state.sourceCandidates = [media.url];
+  }
+  state.sourceIndex = 0;
+  switchToCurrentSource(false);
+  updateOverlayHint();
+
+  if (broadcast && state.joined && state.socket) {
+    state.socket.emit("media:change", media, (ack) => {
+      if (!ack || !ack.ok) {
+        setHint(`同步切换失败：${ack?.message || "未知错误"}`);
+      }
+    });
+  }
+}
+
+function getPlaybackState() {
+  const video = state.dp?.video;
+  if (!video) {
+    return {
+      playing: false,
+      currentTime: 0,
+      playbackRate: 1
+    };
+  }
+  return {
+    playing: !video.paused,
+    currentTime: Number(video.currentTime || 0),
+    playbackRate: Number(video.playbackRate || 1)
+  };
+}
+
+function emitSync(reason) {
+  if (!state.dp || !state.socket || !state.joined || !state.media || !isController()) return;
+  if (performance.now() < state.blockLocalUntil) return;
+  const playback = getPlaybackState();
+  state.socket.emit("sync:update", {
+    playing: playback.playing,
+    currentTime: playback.currentTime,
+    playbackRate: playback.playbackRate,
+    reason
+  });
+}
+
+async function requestPlayWithFallback(fromSync = false) {
+  if (!state.dp) return false;
+  const video = state.dp.video;
+  try {
+    await state.dp.play();
+    state.autoPlayBlocked = false;
+    return true;
+  } catch {
+    if (fromSync && !video.muted) {
+      video.muted = true;
+      try {
+        await state.dp.play();
+        state.autoPlayBlocked = false;
+        setHint("移动端自动播放受限，已临时切为静音播放");
+        return true;
+      } catch {
+        // ignore
+      }
+    }
+    state.autoPlayBlocked = true;
+    if (fromSync) {
+      setHint("当前设备限制自动播放，请点击播放器中央开始播放");
+    }
+    return false;
+  }
+}
+
+function requestSyncPlayIfNeeded() {
+  if (state.syncPlayTask) return;
+  state.syncPlayTask = requestPlayWithFallback(true)
+    .catch(() => false)
+    .finally(() => {
+      state.syncPlayTask = null;
+    });
+}
+
+function applyRemoteSync(syncState, forceSeek = false) {
+  if (!syncState) return;
+  if (!state.media || !state.dp) {
+    state.pendingSync = syncState;
+    return;
+  }
+
+  const video = state.dp.video;
+  const serverTime = Number(syncState.serverTime || nowMs());
+  const elapsed = Math.max(0, (nowMs() - serverTime) / 1000);
+  const targetTime =
+    Number(syncState.currentTime || 0) +
+    (syncState.playing ? elapsed * Number(syncState.playbackRate || 1) : 0);
+  const drift = Math.abs(Number(video.currentTime || 0) - targetTime);
+  const nowTick = performance.now();
+  const throttleBlockedSeek =
+    syncState.playing &&
+    state.autoPlayBlocked &&
+    video.paused &&
+    !forceSeek &&
+    syncState.reason !== "seek" &&
+    nowTick - state.blockedSyncSeekAt < BLOCKED_SYNC_SEEK_INTERVAL_MS;
+
+  withLocalBlock(() => {
+    const nextRate = Number(syncState.playbackRate || 1);
+    if (Math.abs(video.playbackRate - nextRate) > 0.01) {
+      video.playbackRate = nextRate;
+    }
+
+    if (!throttleBlockedSeek && (forceSeek || drift > state.syncDriftThreshold || syncState.reason === "seek")) {
+      try {
+        state.dp.seek(Math.max(0, targetTime));
+        if (syncState.playing && state.autoPlayBlocked && video.paused) {
+          state.blockedSyncSeekAt = nowTick;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (syncState.playing) {
+      if (video.paused) {
+        requestSyncPlayIfNeeded();
+      }
+    } else if (!video.paused) {
+      state.dp.pause();
+    }
+  });
+
+  setHint(`同步漂移 ${drift.toFixed(2)}s`);
+}
+
+function clearFullscreenBarTimer() {
+  if (!state.fullscreenBarTimer) return;
+  clearTimeout(state.fullscreenBarTimer);
+  state.fullscreenBarTimer = null;
+}
+
+function isFullscreenMode() {
+  return state.playerFullscreen;
+}
+
+function showFullscreenDanmakuBar(autoHide = true) {
+  if (!isFullscreenMode()) return;
+  refs.fullscreenDanmakuBar.classList.remove("hidden", "auto-hidden");
+  clearFullscreenBarTimer();
+  if (!autoHide) return;
+  state.fullscreenBarTimer = setTimeout(() => {
+    refs.fullscreenDanmakuBar.classList.add("auto-hidden");
+  }, FULLSCREEN_DANMAKU_AUTO_HIDE_MS);
+}
+
+function hideFullscreenDanmakuBar() {
+  clearFullscreenBarTimer();
+  refs.fullscreenDanmakuBar.classList.remove("auto-hidden");
+  refs.fullscreenDanmakuBar.classList.add("hidden");
+}
+
+async function lockLandscapeIfNeeded() {
+  if (!state.isMobile) return;
+  const orientation = screen.orientation;
+  if (!orientation || typeof orientation.lock !== "function") return;
+  try {
+    await orientation.lock("landscape");
+  } catch {
+    // ignore
+  }
+}
+
+async function unlockOrientationIfNeeded() {
+  const orientation = screen.orientation;
+  if (!orientation || typeof orientation.unlock !== "function") return;
+  try {
+    orientation.unlock();
+  } catch {
+    // ignore
+  }
+}
+
+function handlePlayerFullscreen(opened) {
+  state.playerFullscreen = Boolean(opened);
+  if (!opened) {
+    hideFullscreenDanmakuBar();
+    unlockOrientationIfNeeded().catch(() => {});
+    return;
+  }
+  showFullscreenDanmakuBar(true);
+  lockLandscapeIfNeeded().catch(() => {});
+}
+
+function requestPlayerFullscreen() {
+  if (!state.dp?.fullScreen) return;
+  try {
+    state.dp.fullScreen.request("browser");
+    return;
+  } catch {
+    // ignore and fallback
+  }
+  try {
+    state.dp.fullScreen.request("web");
+  } catch {
+    // ignore
+  }
+}
+
+function cancelPlayerFullscreen() {
+  if (!state.dp?.fullScreen) return;
+  try {
+    state.dp.fullScreen.cancel("browser");
+  } catch {
+    // ignore
+  }
+  try {
+    state.dp.fullScreen.cancel("web");
+  } catch {
+    // ignore
+  }
 }
 
 async function loadFolder(folderId) {
@@ -451,203 +681,20 @@ function renderFolderItems(items) {
   });
 }
 
-function destroyHls() {
-  if (state.hls) {
-    state.hls.destroy();
-    state.hls = null;
-  }
-}
-
-function applySource(url) {
-  destroyHls();
-  const targetUrl = String(url || "");
-  const isM3u8 = /\.m3u8($|\?)/i.test(targetUrl);
-  if (isM3u8 && window.Hls && window.Hls.isSupported()) {
-    const hls = new window.Hls({
-      maxBufferLength: 20,
-      backBufferLength: 8,
-      lowLatencyMode: true
-    });
-    hls.loadSource(targetUrl);
-    hls.attachMedia(refs.videoEl);
-    state.hls = hls;
-    return;
-  }
-  refs.videoEl.src = targetUrl;
-}
-
-function getCurrentSource() {
-  if (!state.sourceCandidates.length) return "";
-  return state.sourceCandidates[state.sourceIndex] || "";
-}
-
-function buildRelaySource(fileId, sourceIndex = 0) {
-  const fid = encodeURIComponent(String(fileId || ""));
-  const idx = Number.isFinite(sourceIndex) ? Math.max(0, Math.floor(sourceIndex)) : 0;
-  return `/api/cx/relay?fileId=${fid}&source=${idx}&ts=${Date.now()}`;
-}
-
-function handlePlaybackError() {
-  const hasNextDirect = state.sourceIndex + 1 < state.sourceCandidates.length;
-  if (hasNextDirect) {
-    tryNextSourceAfterError();
-    return;
-  }
-
-  if (!state.relayFallbackUsed && state.media?.fileId) {
-    const wasPlaying = !refs.videoEl.paused;
-    state.relayFallbackUsed = true;
-    state.sourceCandidates = [buildRelaySource(state.media.fileId)];
-    state.sourceIndex = 0;
-    setHint("鐩磋繛鍙楅檺锛屾鍦ㄥ垏鎹㈠吋瀹规挱鏀鹃€氶亾...");
-    applySource(getCurrentSource());
-    refs.videoEl.load();
-    if (wasPlaying) {
-      refs.videoEl.play().catch(() => {});
-    }
-    return;
-  }
-
-  tryNextSourceAfterError();
-}
-
-function tryNextSourceAfterError() {
-  const nextIndex = state.sourceIndex + 1;
-  if (nextIndex >= state.sourceCandidates.length) {
-    setHint("当前视频所有直连地址都播放失败");
-    return;
-  }
-  const wasPlaying = !refs.videoEl.paused;
-  state.sourceIndex = nextIndex;
-  const nextSource = getCurrentSource();
-  setHint(`正在切换备用播放地址（${nextIndex + 1}/${state.sourceCandidates.length}）...`);
-  applySource(nextSource);
-  refs.videoEl.load();
-  if (wasPlaying) {
-    refs.videoEl.play().catch(() => {});
-  }
-}
-
-async function resolveMediaByFileId(fileId, fileName = "", fromMedia = null) {
-  const result = await fetchJson(`/api/cx/link?fileId=${encodeURIComponent(fileId)}`);
-  const list = Array.isArray(result.candidateUrls) ? result.candidateUrls.filter(Boolean) : [];
-  return {
-    id: fromMedia?.id || `${fileId}-${Date.now()}`,
-    fileId,
-    name: fileName || fromMedia?.name || "未命名视频",
-    duration: Number(result.duration || fromMedia?.duration || 0),
-    candidateUrls: list,
-    url: list[0] || result.url || ""
-  };
-}
-
-async function setMedia(media, broadcast) {
-  state.media = media;
-  state.relayFallbackUsed = false;
-  clearDanmakuLayer();
-  state.sourceCandidates = (media.candidateUrls || []).filter(Boolean);
-  if (!state.sourceCandidates.length && media.url) {
-    state.sourceCandidates = [media.url];
-  }
-  state.sourceIndex = 0;
-  const firstSource = getCurrentSource();
-  if (!firstSource) {
-    throw new Error("没有可用播放地址");
-  }
-
-  applySource(firstSource);
-  refs.videoEl.load();
-  refs.videoEl.currentTime = 0;
-  updateOverlayHint();
-  setControlTimeUI(0, 0);
-  updatePlayButton();
-
-  if (broadcast && state.joined && state.socket) {
-    state.socket.emit("media:change", media, (ack) => {
-      if (!ack || !ack.ok) {
-        setHint(`同步切换失败：${ack?.message || "未知错误"}`);
-      }
-    });
-  }
-}
-
 async function playFromFile(fileItem) {
   if (state.joined && !isController()) {
     setHint("当前不是主控，不能切换视频");
     return;
   }
-  setHint("正在获取直连地址...");
+  setHint("正在读取 S3 播放地址...");
   try {
     const media = await resolveMediaByFileId(fileItem.fileId, fileItem.name);
     await setMedia(media, true);
     setHint(`视频已加载：${fileItem.name}`);
+    requestPlayWithFallback(false).catch(() => {});
   } catch (error) {
     setHint(`加载失败：${error.message}`);
   }
-}
-
-function emitSync(reason) {
-  if (!state.socket || !state.joined || !state.media || !isController()) return;
-  if (performance.now() < state.blockLocalUntil) return;
-  state.socket.emit("sync:update", {
-    playing: !refs.videoEl.paused,
-    currentTime: refs.videoEl.currentTime,
-    playbackRate: refs.videoEl.playbackRate,
-    reason
-  });
-}
-
-function applyRemoteSync(syncState, forceSeek = false) {
-  if (!syncState) return;
-  if (!state.media) {
-    state.pendingSync = syncState;
-    return;
-  }
-
-  const video = refs.videoEl;
-  const serverTime = Number(syncState.serverTime || nowMs());
-  const elapsed = Math.max(0, (nowMs() - serverTime) / 1000);
-  const targetTime =
-    Number(syncState.currentTime || 0) +
-    (syncState.playing ? elapsed * Number(syncState.playbackRate || 1) : 0);
-  const drift = Math.abs(video.currentTime - targetTime);
-  const nowTick = performance.now();
-  const throttleBlockedSeek =
-    syncState.playing &&
-    state.autoPlayBlocked &&
-    video.paused &&
-    !forceSeek &&
-    syncState.reason !== "seek" &&
-    nowTick - state.blockedSyncSeekAt < BLOCKED_SYNC_SEEK_INTERVAL_MS;
-
-  withLocalBlock(() => {
-    const targetRate = Number(syncState.playbackRate || 1);
-    if (Math.abs(video.playbackRate - targetRate) > 0.01) {
-      video.playbackRate = targetRate;
-      updateRateButton();
-    }
-
-    if (!throttleBlockedSeek && (forceSeek || drift > state.syncDriftThreshold || syncState.reason === "seek")) {
-      try {
-        video.currentTime = Math.max(0, targetTime);
-        if (syncState.playing && state.autoPlayBlocked && video.paused) {
-          state.blockedSyncSeekAt = nowTick;
-        }
-      } catch {
-        // no-op
-      }
-    }
-
-    if (syncState.playing) {
-      if (video.paused) {
-        requestSyncPlayIfNeeded();
-      }
-    } else if (!video.paused) {
-      video.pause();
-    }
-  });
-
-  setHint(`同步漂移 ${drift.toFixed(2)}s`);
 }
 
 function sendChat() {
@@ -657,7 +704,8 @@ function sendChat() {
   }
   const text = refs.chatInput.value.trim();
   if (!text) return;
-  state.socket.emit("chat:send", { text }, (ack) => {
+  const videoTime = Number(state.dp?.video?.currentTime || 0);
+  state.socket.emit("chat:send", { text, color: refs.danmakuColorInput.value, videoTime }, (ack) => {
     if (!ack || !ack.ok) {
       setHint(`消息发送失败：${ack?.message || "未知错误"}`);
       return;
@@ -674,12 +722,13 @@ function sendDanmaku(fromFullscreen = false) {
   const input = fromFullscreen ? refs.fullscreenDanmakuInput : refs.danmakuInput;
   const text = input.value.trim();
   if (!text) return;
+  const videoTime = Number(state.dp?.video?.currentTime || 0);
   state.socket.emit(
     "danmaku:send",
     {
       text,
       color: refs.danmakuColorInput.value,
-      videoTime: refs.videoEl.currentTime || 0
+      videoTime
     },
     (ack) => {
       if (!ack || !ack.ok) {
@@ -694,46 +743,6 @@ function sendDanmaku(fromFullscreen = false) {
   );
 }
 
-async function toggleFullscreen() {
-  if (isFullscreenMode()) {
-    if (state.pseudoFullscreen) {
-      exitPseudoFullscreen();
-      handleFullscreenChange();
-    } else if (typeof document.exitFullscreen === "function") {
-      await document.exitFullscreen();
-    } else if (typeof document.webkitExitFullscreen === "function") {
-      document.webkitExitFullscreen();
-    }
-    await unlockOrientationIfNeeded();
-    return;
-  }
-  let entered = false;
-  if (typeof refs.videoStage.requestFullscreen === "function") {
-    try {
-      await refs.videoStage.requestFullscreen();
-      entered = true;
-    } catch {
-      entered = false;
-    }
-  }
-  if (!entered) {
-    enterPseudoFullscreen();
-    handleFullscreenChange();
-  }
-  await lockLandscapeIfNeeded();
-}
-
-function handleFullscreenChange() {
-  const opened = isFullscreenMode();
-  if (!opened) {
-    hideFullscreenDanmakuBar();
-    unlockOrientationIfNeeded().catch(() => {});
-    return;
-  }
-  showFullscreenDanmakuBar(true);
-  lockLandscapeIfNeeded().catch(() => {});
-}
-
 function joinCurrentRoom() {
   if (!state.socket) return;
   state.socket.emit("room:join", { roomId: state.roomId, nickname: state.nickname }, (ack) => {
@@ -742,7 +751,6 @@ function joinCurrentRoom() {
       return;
     }
     state.joined = true;
-    updateRoomHeader();
     setHint("已加入房间");
   });
 }
@@ -762,7 +770,7 @@ function bindActions() {
         setHint(`抢主控失败：${ack?.message || "未知错误"}`);
         return;
       }
-      setHint("已成为主控");
+      setHint("你已成为主控");
     });
   });
 
@@ -779,81 +787,30 @@ function bindActions() {
     loadFolder(currentFolder().id);
   });
 
-  refs.playToggleBtn.addEventListener("click", () => {
-    if (!state.media?.fileId) return;
-    if (refs.videoEl.paused) {
-      requestPlayWithFallback(false).catch(() => {});
-      return;
-    }
-    refs.videoEl.pause();
-  });
-
-  refs.progressRange.addEventListener("pointerdown", () => {
-    state.draggingProgress = true;
-  });
-  refs.progressRange.addEventListener("pointerup", () => {
-    state.draggingProgress = false;
-  });
-  refs.progressRange.addEventListener("input", () => {
-    const duration = refs.videoEl.duration || 0;
-    if (duration <= 0) return;
-    const target = (Number(refs.progressRange.value) / 1000) * duration;
-    refs.currentTimeLabel.textContent = formatClock(target);
-  });
-  refs.progressRange.addEventListener("change", () => {
-    const duration = refs.videoEl.duration || 0;
-    if (duration <= 0) return;
-    const target = (Number(refs.progressRange.value) / 1000) * duration;
-    refs.videoEl.currentTime = target;
-    emitSync("seek");
-  });
-
-  refs.rateBtn.addEventListener("click", () => {
-    const current = refs.videoEl.playbackRate || 1;
-    const idx = RATE_STEPS.findIndex((item) => Math.abs(item - current) < 0.01);
-    const next = RATE_STEPS[(idx + 1 + RATE_STEPS.length) % RATE_STEPS.length];
-    refs.videoEl.playbackRate = next;
-    updateRateButton();
-    emitSync("ratechange");
-  });
-
-  refs.volumeRange.addEventListener("input", () => {
-    refs.videoEl.volume = Number(refs.volumeRange.value);
-    if (refs.videoEl.volume > 0 && refs.videoEl.muted) {
-      refs.videoEl.muted = false;
-    }
-  });
-  refs.muteBtn.addEventListener("click", () => {
-    refs.videoEl.muted = !refs.videoEl.muted;
-    updateMuteButton();
-  });
-
-  refs.fullscreenBtn.addEventListener("click", () => {
-    toggleFullscreen().catch(() => {});
-  });
-  refs.fullscreenExitBtn.addEventListener("click", () => {
-    if (isFullscreenMode()) {
-      toggleFullscreen().catch(() => {});
-    }
-  });
-
   refs.chatSendBtn.addEventListener("click", sendChat);
   refs.chatInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") sendChat();
   });
 
   refs.sendDanmakuBtn.addEventListener("click", () => sendDanmaku(false));
-  refs.sendDanmakuBtn2.addEventListener("click", () => sendDanmaku(false));
-  refs.fullscreenDanmakuSendBtn.addEventListener("click", () => sendDanmaku(true));
   refs.danmakuInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") sendDanmaku(false);
   });
+  refs.fullscreenDanmakuSendBtn.addEventListener("click", () => sendDanmaku(true));
   refs.fullscreenDanmakuInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") sendDanmaku(true);
   });
   refs.fullscreenDanmakuInput.addEventListener("focus", () => showFullscreenDanmakuBar(false));
   refs.fullscreenDanmakuInput.addEventListener("input", () => showFullscreenDanmakuBar(true));
   refs.fullscreenDanmakuBar.addEventListener("pointerdown", () => showFullscreenDanmakuBar(false));
+  refs.videoStage.addEventListener("pointerup", (event) => {
+    if (!isFullscreenMode()) return;
+    if (event.target?.closest?.("#fullscreenDanmakuBar")) return;
+    showFullscreenDanmakuBar(true);
+  });
+
+  refs.fullscreenBtn.addEventListener("click", () => requestPlayerFullscreen());
+  refs.fullscreenExitBtn.addEventListener("click", () => cancelPlayerFullscreen());
 
   refs.emojiRow.innerHTML = "";
   EMOJI_LIST.forEach((emoji) => {
@@ -868,61 +825,15 @@ function bindActions() {
     refs.emojiRow.appendChild(button);
   });
 
-  document.addEventListener("fullscreenchange", handleFullscreenChange);
-  document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
-  window.addEventListener("resize", updatePseudoFullscreenOrientationClass);
-}
-
-function bindVideoEvents() {
-  refs.videoEl.addEventListener("click", () => {
-    if (isFullscreenMode()) {
-      const hiddenNow =
-        refs.fullscreenDanmakuBar.classList.contains("hidden") ||
-        refs.fullscreenDanmakuBar.classList.contains("auto-hidden");
-      if (hiddenNow) {
-        showFullscreenDanmakuBar(true);
-        return;
-      }
-      showFullscreenDanmakuBar(true);
-    }
-    if (refs.videoEl.paused) {
-      requestPlayWithFallback(false).catch(() => {});
-      return;
-    }
-    refs.videoEl.pause();
-  });
-  refs.videoEl.addEventListener("play", () => {
-    state.autoPlayBlocked = false;
-    updatePlayButton();
-    emitSync("play");
-  });
-  refs.videoEl.addEventListener("pause", () => {
-    updatePlayButton();
-    emitSync("pause");
-  });
-  refs.videoEl.addEventListener("timeupdate", () => {
-    setControlTimeUI(refs.videoEl.currentTime || 0, refs.videoEl.duration || 0);
-  });
-  refs.videoEl.addEventListener("loadedmetadata", () => {
-    setControlTimeUI(refs.videoEl.currentTime || 0, refs.videoEl.duration || 0);
-    if (state.pendingSync) {
-      applyRemoteSync(state.pendingSync, true);
-      state.pendingSync = null;
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement && state.playerFullscreen) {
+      handlePlayerFullscreen(false);
     }
   });
-  refs.videoEl.addEventListener("ratechange", () => {
-    updateRateButton();
-    emitSync("ratechange");
-  });
-  refs.videoEl.addEventListener("volumechange", () => {
-    refs.volumeRange.value = String(refs.videoEl.volume);
-    updateMuteButton();
-  });
-  refs.videoEl.addEventListener("seeked", () => {
-    emitSync("seek");
-  });
-  refs.videoEl.addEventListener("error", () => {
-    handlePlaybackError();
+  document.addEventListener("webkitfullscreenchange", () => {
+    if (!document.webkitFullscreenElement && state.playerFullscreen) {
+      handlePlayerFullscreen(false);
+    }
   });
 }
 
@@ -959,7 +870,7 @@ function initSocket() {
     renderMembers();
     resetChat(snapshot.chatHistory || []);
     clearDanmakuLayer();
-    (snapshot.danmakuHistory || []).slice(-30).forEach(spawnDanmaku);
+    (snapshot.danmakuHistory || []).slice(-60).forEach(spawnDanmaku);
 
     if (snapshot.media?.fileId) {
       try {
@@ -1026,10 +937,6 @@ async function bootstrap() {
   if (!accessOk) return;
 
   state.isMobile = isMobileClient();
-  refs.videoEl.setAttribute("playsinline", "");
-  refs.videoEl.setAttribute("webkit-playsinline", "true");
-  refs.videoEl.setAttribute("x5-playsinline", "true");
-
   state.roomId = String(getQueryParam("room") || localStorage.getItem("vo_room_id") || "").trim();
   state.nickname = String(getQueryParam("nick") || localStorage.getItem("vo_nickname") || "").trim();
   if (!state.roomId) {
@@ -1045,13 +952,19 @@ async function bootstrap() {
   refs.roomApp.classList.remove("hidden");
   updateRoomHeader();
   updateTopStatus();
-  updatePlayButton();
-  updateMuteButton();
-  updateRateButton();
   updateOverlayHint();
 
+  try {
+    await ensureDirectS3Bridge();
+  } catch (error) {
+    const message = `S3 直连初始化失败：${error.message}`;
+    setHint(message);
+    refs.fileList.innerHTML = `<div class="hint">${message}</div>`;
+    return;
+  }
+
   bindActions();
-  bindVideoEvents();
+  ensurePlayer("");
 
   try {
     const health = await fetchJson("/api/health");
@@ -1067,14 +980,15 @@ async function bootstrap() {
     refreshFolderPathText();
     await loadFolder(state.rootFolderId);
   } catch (error) {
-    refs.fileList.innerHTML = `<div class="hint">初始化超星配置失败：${error.message}</div>`;
+    refs.fileList.innerHTML = `<div class="hint">初始化 S3 配置失败：${error.message}</div>`;
   }
 
   initSocket();
 
   state.heartbeatTimer = setInterval(() => {
     if (!state.joined || !state.media || !isController()) return;
-    if (refs.videoEl.paused) return;
+    const video = state.dp?.video;
+    if (!video || video.paused) return;
     emitSync("heartbeat");
   }, 1000);
 }

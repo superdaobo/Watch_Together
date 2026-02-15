@@ -152,6 +152,31 @@ function createRoomHub(io, options = {}) {
     emitRoomMeta(joinedRoomId);
   }
 
+  function createChatMessage(socket, text, type = "text", mirroredFrom = "") {
+    return {
+      id: randomId(),
+      text,
+      type,
+      fromSocketId: socket.id,
+      nickname: socket.data.nickname || "匿名用户",
+      createdAt: now(),
+      mirroredFrom
+    };
+  }
+
+  function createDanmakuItem(socket, text, color, videoTime, mirroredFrom = "") {
+    return {
+      id: randomId(),
+      text,
+      color: sanitizeColor(color),
+      videoTime: clampNumber(videoTime, 0, 864000, 0),
+      fromSocketId: socket.id,
+      nickname: socket.data.nickname || "匿名用户",
+      createdAt: now(),
+      mirroredFrom
+    };
+  }
+
   io.on("connection", (socket) => {
     socket.data.roomId = "";
     socket.data.nickname = "";
@@ -260,8 +285,8 @@ function createRoomHub(io, options = {}) {
       const media = {
         id: cleanText(payload.id, 120) || randomId(),
         name: cleanText(payload.name, 200),
-        fileId: cleanText(payload.fileId, 120),
-        url: cleanText(payload.url, 5000),
+        fileId: cleanText(payload.fileId, 400),
+        url: cleanText(payload.url, 8000),
         duration: clampNumber(payload.duration, 0, 864000, 0),
         changedBy: socket.data.nickname || "未知",
         changedAt: now()
@@ -342,16 +367,20 @@ function createRoomHub(io, options = {}) {
         return;
       }
 
-      const message = {
-        id: randomId(),
-        text,
-        type: cleanText(payload.type, 20) || "text",
-        fromSocketId: socket.id,
-        nickname: socket.data.nickname || "匿名用户",
-        createdAt: now()
-      };
+      const message = createChatMessage(socket, text, cleanText(payload.type, 20) || "text", "");
       pushWithLimit(room.chatHistory, message, chatLimit);
       io.to(roomId).emit("chat:new", message);
+
+      const mirroredDanmaku = createDanmakuItem(
+        socket,
+        text,
+        payload.color,
+        clampNumber(payload.videoTime, 0, 864000, room.syncState?.currentTime || 0),
+        "chat"
+      );
+      pushWithLimit(room.danmakuHistory, mirroredDanmaku, danmakuLimit);
+      io.to(roomId).emit("danmaku:new", mirroredDanmaku);
+
       room.updatedAt = now();
       ack?.({ ok: true });
     });
@@ -370,17 +399,14 @@ function createRoomHub(io, options = {}) {
         return;
       }
 
-      const item = {
-        id: randomId(),
-        text,
-        color: sanitizeColor(payload.color),
-        videoTime: clampNumber(payload.videoTime, 0, 864000, 0),
-        fromSocketId: socket.id,
-        nickname: socket.data.nickname || "匿名用户",
-        createdAt: now()
-      };
-      pushWithLimit(room.danmakuHistory, item, danmakuLimit);
-      io.to(roomId).emit("danmaku:new", item);
+      const danmaku = createDanmakuItem(socket, text, payload.color, payload.videoTime, "");
+      pushWithLimit(room.danmakuHistory, danmaku, danmakuLimit);
+      io.to(roomId).emit("danmaku:new", danmaku);
+
+      const mirroredChat = createChatMessage(socket, text, "danmaku", "danmaku");
+      pushWithLimit(room.chatHistory, mirroredChat, chatLimit);
+      io.to(roomId).emit("chat:new", mirroredChat);
+
       room.updatedAt = now();
       ack?.({ ok: true });
     });

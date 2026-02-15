@@ -3,14 +3,13 @@ require("dotenv").config();
 const crypto = require("node:crypto");
 const http = require("node:http");
 const path = require("node:path");
-const { Readable } = require("node:stream");
 
 const cors = require("cors");
 const express = require("express");
 const { Server } = require("socket.io");
 
-const { ChaoxingClient } = require("./src/chaoxing-client");
 const { createRoomHub } = require("./src/room-hub");
+const { S3MediaService } = require("./src/s3-media");
 
 const PORT = Number(process.env.PORT || 3000);
 const ACCESS_COOKIE_NAME = "vo_access";
@@ -19,103 +18,8 @@ const APP_ACCESS_PASSWORD = String(process.env.APP_ACCESS_PASSWORD || "520");
 const SYNC_DRIFT_THRESHOLD = Number(process.env.SYNC_DRIFT_THRESHOLD || 0.4);
 const ROOM_CHAT_LIMIT = Number(process.env.ROOM_CHAT_LIMIT || 300);
 const ROOM_DANMAKU_LIMIT = Number(process.env.ROOM_DANMAKU_LIMIT || 500);
-const RELAY_LINK_CACHE_MS = Number(process.env.CX_RELAY_LINK_CACHE_MS || 45000);
-const RELAY_REFERER = String(process.env.CX_MEDIA_REFERER || "https://chaoxing.com/");
-const RELAY_USER_AGENT = String(
-  process.env.CX_MEDIA_UA ||
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-);
 
 const accessSessions = new Map();
-const relayLinkCache = new Map();
-
-function isAllowedRelayUrl(rawUrl) {
-  const input = String(rawUrl || "").trim();
-  if (!input) return false;
-  try {
-    const parsed = new URL(input);
-    const protocolOk = parsed.protocol === "https:" || parsed.protocol === "http:";
-    const host = parsed.hostname.toLowerCase();
-    const hostOk = host.endsWith(".cldisk.com") || host.endsWith(".chaoxing.com");
-    return protocolOk && hostOk;
-  } catch {
-    return false;
-  }
-}
-
-function pickRelayUrls(link, preferredIndex = 0) {
-  const list = Array.isArray(link?.candidateUrls) ? link.candidateUrls : [];
-  const unique = [];
-  list.forEach((item) => {
-    const target = String(item || "").trim();
-    if (target && isAllowedRelayUrl(target) && !unique.includes(target)) {
-      unique.push(target);
-    }
-  });
-  const fallback = String(link?.url || "").trim();
-  if (fallback && isAllowedRelayUrl(fallback) && !unique.includes(fallback)) {
-    unique.push(fallback);
-  }
-  if (!unique.length) {
-    return [];
-  }
-  const safeIndex = Number.isFinite(preferredIndex) ? Math.max(0, Math.floor(preferredIndex)) : 0;
-  if (safeIndex <= 0 || safeIndex >= unique.length) {
-    return unique;
-  }
-  return [unique[safeIndex], ...unique.filter((_, idx) => idx !== safeIndex)];
-}
-
-async function getPlayableLinkCached(fileId, forceRefresh = false) {
-  const key = String(fileId || "").trim();
-  if (!key) {
-    throw new Error("fileId 涓嶈兘涓虹┖");
-  }
-  if (!forceRefresh) {
-    const cache = relayLinkCache.get(key);
-    if (cache && cache.expiresAt > Date.now()) {
-      return cache.value;
-    }
-  }
-  const value = await chaoxingClient.getPlayableLink(key);
-  relayLinkCache.set(key, {
-    value,
-    expiresAt: Date.now() + RELAY_LINK_CACHE_MS
-  });
-  return value;
-}
-
-async function openRelayStream(urls, incomingRange = "") {
-  const rangeValue = String(incomingRange || "").trim();
-  const baseHeaders = {
-    Accept: "*/*",
-    Referer: RELAY_REFERER,
-    "User-Agent": RELAY_USER_AGENT
-  };
-  if (rangeValue) {
-    baseHeaders.Range = rangeValue;
-  }
-
-  for (const targetUrl of urls) {
-    try {
-      const response = await fetch(targetUrl, {
-        method: "GET",
-        headers: baseHeaders,
-        redirect: "follow"
-      });
-      if (response.status >= 200 && response.status < 400) {
-        return response;
-      }
-      if (response.body) {
-        await response.body.cancel().catch(() => {});
-      }
-    } catch {
-      // ignore and try next
-    }
-  }
-  return null;
-}
 
 function parseCookieHeader(rawCookieHeader = "") {
   return String(rawCookieHeader)
@@ -198,25 +102,13 @@ function requireAccess(req, res, next) {
   next();
 }
 
-function parseAdditionJson() {
-  const raw = String(process.env.CX_ADDITION_JSON || "").trim();
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
-
-function buildCxConfig() {
-  const addition = parseAdditionJson();
-  return {
-    userName: String(process.env.CX_USER_NAME || addition.user_name || ""),
-    password: String(process.env.CX_PASSWORD || addition.password || ""),
-    bbsid: String(process.env.CX_BBSID || addition.bbsid || ""),
-    rootFolderId: String(process.env.CX_ROOT_FOLDER_ID || addition.root_folder_id || "-1"),
-    cookie: String(process.env.CX_COOKIE || addition.cookie || "")
-  };
+function parseBoolean(input, fallback = true) {
+  if (typeof input === "boolean") return input;
+  const text = String(input || "").trim().toLowerCase();
+  if (!text) return fallback;
+  if (["1", "true", "yes", "y", "on"].includes(text)) return true;
+  if (["0", "false", "no", "n", "off"].includes(text)) return false;
+  return fallback;
 }
 
 const app = express();
@@ -228,7 +120,16 @@ const io = new Server(server, {
   }
 });
 
-const chaoxingClient = new ChaoxingClient(buildCxConfig());
+const mediaService = new S3MediaService({
+  endpoint: process.env.S3_ENDPOINT || "https://s3.cstcloud.cn",
+  bucket: process.env.S3_BUCKET || "45d9d363becd4f38b6d19392e7536e52",
+  region: process.env.S3_REGION || "us-east-1",
+  accessKeyId: process.env.S3_ACCESS_KEY_ID || "",
+  secretAccessKey: process.env.S3_SECRET_ACCESS_KEY || "",
+  forcePathStyle: parseBoolean(process.env.S3_FORCE_PATH_STYLE, true),
+  urlExpireSeconds: Number(process.env.S3_URL_EXPIRE_SECONDS || 1800),
+  maxKeys: Number(process.env.S3_MAX_KEYS || 1000)
+});
 
 io.use((socket, next) => {
   const cookies = parseCookieHeader(socket.request.headers.cookie || "");
@@ -259,7 +160,8 @@ app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     now: new Date().toISOString(),
-    syncDriftThreshold: SYNC_DRIFT_THRESHOLD
+    syncDriftThreshold: SYNC_DRIFT_THRESHOLD,
+    dataSource: "s3"
   });
 });
 
@@ -312,30 +214,32 @@ app.get("/api/lobby/rooms", (_req, res) => {
 app.get("/api/cx/config", (_req, res) => {
   res.json({
     ok: true,
-    config: chaoxingClient.getSafeConfig()
+    config: mediaService.getSafeConfig()
   });
 });
 
 app.post("/api/cx/reload-config", (req, res) => {
   const body = req.body || {};
-  chaoxingClient.setRuntimeConfig({
-    userName: typeof body.userName === "string" ? body.userName : undefined,
-    password: typeof body.password === "string" ? body.password : undefined,
-    bbsid: typeof body.bbsid === "string" ? body.bbsid : undefined,
-    rootFolderId: typeof body.rootFolderId === "string" ? body.rootFolderId : undefined,
-    cookie: typeof body.cookie === "string" ? body.cookie : undefined
+  mediaService.setRuntimeConfig({
+    endpoint: typeof body.endpoint === "string" ? body.endpoint : undefined,
+    bucket: typeof body.bucket === "string" ? body.bucket : undefined,
+    region: typeof body.region === "string" ? body.region : undefined,
+    accessKeyId: typeof body.accessKeyId === "string" ? body.accessKeyId : undefined,
+    secretAccessKey: typeof body.secretAccessKey === "string" ? body.secretAccessKey : undefined,
+    forcePathStyle: typeof body.forcePathStyle === "boolean" ? body.forcePathStyle : undefined,
+    urlExpireSeconds: typeof body.urlExpireSeconds === "number" ? body.urlExpireSeconds : undefined,
+    maxKeys: typeof body.maxKeys === "number" ? body.maxKeys : undefined
   });
-  relayLinkCache.clear();
   res.json({
     ok: true,
-    config: chaoxingClient.getSafeConfig()
+    config: mediaService.getSafeConfig()
   });
 });
 
 app.get("/api/cx/list", async (req, res) => {
   try {
-    const folderId = String(req.query.folderId || chaoxingClient.rootFolderId || "-1");
-    const data = await chaoxingClient.listFolder(folderId);
+    const folderId = String(req.query.folderId || "-1");
+    const data = await mediaService.listFolder(folderId);
     res.json({
       ok: true,
       folderId: data.folderId,
@@ -359,13 +263,15 @@ app.get("/api/cx/link", async (req, res) => {
       });
       return;
     }
-    const link = await getPlayableLinkCached(fileId);
+    const link = await mediaService.getPlayableLink(fileId);
     res.json({
       ok: true,
       fileId,
       duration: link.duration,
       fileStatus: link.fileStatus,
       url: link.url,
+      playUrl: link.playUrl || link.url,
+      directUrl: link.directUrl || "",
       previewUrl: link.previewUrl || "",
       downloadUrl: link.downloadUrl || "",
       candidateUrls: link.candidateUrls || []
@@ -378,70 +284,57 @@ app.get("/api/cx/link", async (req, res) => {
   }
 });
 
-app.get("/api/cx/relay", async (req, res) => {
+app.post("/api/cx/sign", async (req, res) => {
   try {
-    const fileId = String(req.query.fileId || "").trim();
-    const sourceIndex = Number.parseInt(String(req.query.source || "0"), 10);
+    const fileId = String(req.body?.fileId || "").trim();
+    const method = String(req.body?.method || "GET").trim().toUpperCase();
+    const range = String(req.body?.range || "").trim();
     if (!fileId) {
       res.status(400).json({
         ok: false,
-        message: "fileId 涓嶈兘涓虹┖"
+        message: "fileId 不能为空"
       });
       return;
     }
-
-    const rangeHeader = String(req.headers.range || "").trim();
-    const firstLink = await getPlayableLinkCached(fileId);
-    let upstream = await openRelayStream(pickRelayUrls(firstLink, sourceIndex), rangeHeader);
-
-    if (!upstream) {
-      const refreshed = await getPlayableLinkCached(fileId, true);
-      upstream = await openRelayStream(pickRelayUrls(refreshed, sourceIndex), rangeHeader);
-    }
-
-    if (!upstream || !upstream.body) {
-      res.status(502).json({
+    if (method !== "GET" && method !== "HEAD") {
+      res.status(400).json({
         ok: false,
-        message: "褰撳墠瑙嗛鏃犳硶寤虹珛鍏煎浼犺緭"
+        message: "method 仅支持 GET/HEAD"
       });
       return;
     }
 
-    res.status(upstream.status);
-    const passHeaders = [
-      "content-type",
-      "content-length",
-      "content-range",
-      "accept-ranges",
-      "cache-control",
-      "etag",
-      "last-modified",
-      "content-disposition"
-    ];
-    passHeaders.forEach((name) => {
-      const value = upstream.headers.get(name);
-      if (value) {
-        res.setHeader(name, value);
-      }
+    const signed = await mediaService.signObjectRequest(fileId, {
+      method,
+      range
     });
-    res.setHeader("x-video-relay", "1");
 
-    const stream = Readable.fromWeb(upstream.body);
-    stream.on("error", () => {
-      if (!res.headersSent) {
-        res.status(502).end("relay stream error");
-      } else {
-        res.end();
-      }
+    res.json({
+      ok: true,
+      fileId,
+      method: signed.method,
+      url: signed.url,
+      headers: signed.headers
     });
-    res.on("close", () => {
-      stream.destroy();
-    });
-    stream.pipe(res);
   } catch (error) {
     res.status(500).json({
       ok: false,
-      message: error.message || "瑙嗛鍏煎浼犺緭澶辫触"
+      message: error.message || "生成签名失败"
+    });
+  }
+});
+
+app.get("/api/cx/first-video", async (_req, res) => {
+  try {
+    const item = await mediaService.getFirstVideo();
+    res.json({
+      ok: true,
+      item
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error.message || "读取 S3 视频失败"
     });
   }
 });
