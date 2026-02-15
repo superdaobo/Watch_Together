@@ -23,7 +23,9 @@ const state = {
   danmakuTracks: [],
   sourceCandidates: [],
   sourceIndex: 0,
+  sourceTypeCache: {},
   dp: null,
+  mpegtsPlayer: null,
   playerReady: false,
   autoPlayBlocked: false,
   blockedSyncSeekAt: 0,
@@ -122,6 +124,75 @@ function guessVideoType(url) {
   if (raw.includes(".m3u8")) return "hls";
   if (raw.includes(".flv")) return "flv";
   return "auto";
+}
+
+function destroyMpegtsPlayer() {
+  if (!state.mpegtsPlayer) return;
+  try {
+    state.mpegtsPlayer.pause();
+  } catch {
+    // ignore
+  }
+  try {
+    state.mpegtsPlayer.unload();
+  } catch {
+    // ignore
+  }
+  try {
+    state.mpegtsPlayer.detachMediaElement();
+  } catch {
+    // ignore
+  }
+  try {
+    state.mpegtsPlayer.destroy();
+  } catch {
+    // ignore
+  }
+  state.mpegtsPlayer = null;
+}
+
+async function probeSourceType(url) {
+  const raw = String(url || "");
+  const normalized = raw.toLowerCase();
+  if (!raw) return "auto";
+  if (normalized.includes(".m3u8")) return "hls";
+  if (normalized.includes(".flv")) return "flv";
+  try {
+    const response = await fetch(raw, {
+      method: "GET",
+      headers: {
+        Range: "bytes=0-511"
+      },
+      credentials: "omit",
+      mode: "cors"
+    });
+    if (!response.ok) return "auto";
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length >= 376 && bytes[0] === 0x47 && bytes[188] === 0x47) {
+      return "mpegts";
+    }
+    if (bytes.length >= 3 && bytes[0] === 0x46 && bytes[1] === 0x4c && bytes[2] === 0x56) {
+      return "flv";
+    }
+    if (bytes.length >= 7) {
+      const text = new TextDecoder().decode(bytes.slice(0, 64));
+      if (text.includes("#EXTM3U")) return "hls";
+    }
+  } catch {
+    // ignore probe error and fallback to auto
+  }
+  return "auto";
+}
+
+async function resolveSourceType(url) {
+  const key = String(url || "").trim();
+  if (!key) return "auto";
+  if (state.sourceTypeCache[key]) {
+    return state.sourceTypeCache[key];
+  }
+  const detected = await probeSourceType(key);
+  state.sourceTypeCache[key] = detected;
+  return detected;
 }
 
 async function fetchJson(url, options = {}) {
@@ -401,6 +472,26 @@ function ensurePlayer(sourceUrl = "") {
     theme: "#2ee8ad",
     lang: "zh-cn",
     volume: 0.8,
+    customType: {
+      mpegts(video) {
+        if (!window.mpegts || !window.mpegts.isSupported()) return;
+        destroyMpegtsPlayer();
+        const player = window.mpegts.createPlayer(
+          {
+            type: "mpegts",
+            url: video.src,
+            isLive: false
+          },
+          {
+            enableWorker: true,
+            autoCleanupSourceBuffer: true
+          }
+        );
+        state.mpegtsPlayer = player;
+        player.attachMediaElement(video);
+        player.load();
+      }
+    },
     video: {
       url: sourceUrl || "",
       type: guessVideoType(sourceUrl)
@@ -476,6 +567,9 @@ function buildPlaybackFailureHint() {
   const source = getCurrentSource();
   try {
     const parsed = new URL(source, location.origin);
+    if (parsed.origin === location.origin && parsed.pathname.startsWith("/s3-direct/")) {
+      return "当前视频地址均播放失败，可能是视频封装格式异常（如 TS 伪装 MP4）或对象权限异常";
+    }
     if (parsed.hostname) {
       return `当前视频地址均播放失败，可能无法访问 ${parsed.hostname}（DNS/网络异常）`;
     }
@@ -517,17 +611,21 @@ function appendRetryParam(url, token) {
   }
 }
 
-function switchToCurrentSource(autoPlay = false) {
+async function switchToCurrentSource(autoPlay = false) {
   const source = getCurrentSource();
   if (!source) {
     throw new Error("没有可用播放地址");
   }
+  const sourceType = await resolveSourceType(source);
   const dp = ensurePlayer(source);
-  if (dp.video?.src !== source) {
+  const currentType = String(dp.video?.dataset?.sourceType || "");
+  if (dp.video?.src !== source || currentType !== sourceType) {
+    destroyMpegtsPlayer();
     dp.switchVideo({
       url: source,
-      type: guessVideoType(source)
+      type: sourceType
     });
+    dp.video.dataset.sourceType = sourceType;
   }
   state.playerReady = false;
   if (autoPlay) {
@@ -557,7 +655,7 @@ async function recoverDirectPlaybackSource() {
       state.sourceCandidates = [appendRetryParam(recovered.url, token)];
     }
     state.sourceIndex = 0;
-    switchToCurrentSource(true);
+    await switchToCurrentSource(true);
     setHint("直连通道已重试，正在重新加载...");
     return true;
   } catch (error) {
@@ -568,7 +666,7 @@ async function recoverDirectPlaybackSource() {
   }
 }
 
-function tryNextSourceAfterError() {
+async function tryNextSourceAfterError() {
   const next = state.sourceIndex + 1;
   if (next >= state.sourceCandidates.length) {
     recoverDirectPlaybackSource().then((ok) => {
@@ -581,7 +679,7 @@ function tryNextSourceAfterError() {
   state.sourceIndex = next;
   setHint(`当前地址失败，切换备用地址 ${next + 1}/${state.sourceCandidates.length}...`);
   try {
-    switchToCurrentSource(true);
+    await switchToCurrentSource(true);
   } catch (error) {
     setHint(error.message);
   }
@@ -620,7 +718,7 @@ async function setMedia(media, broadcast) {
     state.sourceCandidates = [media.url];
   }
   state.sourceIndex = 0;
-  switchToCurrentSource(false);
+  await switchToCurrentSource(false);
   updateOverlayHint();
 
   if (broadcast && state.joined && state.socket) {
