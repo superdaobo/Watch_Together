@@ -127,7 +127,7 @@ const mediaService = new S3MediaService({
   accessKeyId: process.env.S3_ACCESS_KEY_ID || "",
   secretAccessKey: process.env.S3_SECRET_ACCESS_KEY || "",
   forcePathStyle: parseBoolean(process.env.S3_FORCE_PATH_STYLE, true),
-  playMode: process.env.S3_PLAY_MODE || "presigned-url",
+  playMode: process.env.S3_PLAY_MODE || "signed-header",
   urlExpireSeconds: Number(process.env.S3_URL_EXPIRE_SECONDS || 1800),
   maxKeys: Number(process.env.S3_MAX_KEYS || 1000)
 });

@@ -335,25 +335,21 @@ input[type="color"] {
   background: rgba(0, 0, 0, 0.45);
 }
 
-.custom-controls {
+.transport-controls {
   display: grid;
-  grid-template-columns: auto auto minmax(120px, 1fr) auto auto minmax(84px, 120px) auto auto;
+  grid-template-columns: auto auto minmax(180px, 1fr) auto auto;
   gap: 8px;
   align-items: center;
 }
 
-#progressRange {
+.transport-controls #seekRange {
   width: 100%;
 }
 
-#volumeRange {
-  width: 100%;
-}
-
-.time-label {
+.transport-controls .time-label {
   color: var(--muted);
   font-size: 12px;
-  min-width: 44px;
+  min-width: 50px;
   text-align: center;
 }
 
@@ -571,16 +567,15 @@ input[type="color"] {
     max-height: 220px;
   }
 
-  .custom-controls {
-    grid-template-columns: repeat(4, 1fr);
+  .transport-controls {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
-  .custom-controls #progressRange,
-  .custom-controls #volumeRange {
+  .transport-controls #seekRange {
     grid-column: 1 / -1;
   }
 
-  .custom-controls .time-label {
+  .transport-controls .time-label {
     text-align: left;
   }
 

@@ -37,7 +37,8 @@ const state = {
   fullscreenDanmakuPlugin: null,
   directRecoverAttempted: false,
   sourceRecovering: false,
-  playMode: "presigned-url"
+  playMode: "signed-header",
+  transportDragging: false
 };
 
 const refs = {
@@ -57,6 +58,11 @@ const refs = {
   dplayerContainer: document.getElementById("dplayerContainer"),
   danmakuLayer: document.getElementById("danmakuLayer"),
   playerOverlayHint: document.getElementById("playerOverlayHint"),
+  seekBackBtn: document.getElementById("seekBackBtn"),
+  timeCurrentLabel: document.getElementById("timeCurrentLabel"),
+  seekRange: document.getElementById("seekRange"),
+  timeDurationLabel: document.getElementById("timeDurationLabel"),
+  seekForwardBtn: document.getElementById("seekForwardBtn"),
   sendDanmakuBtn: document.getElementById("sendDanmakuBtn"),
   danmakuColorInput: document.getElementById("danmakuColorInput"),
   danmakuInput: document.getElementById("danmakuInput"),
@@ -117,6 +123,133 @@ function formatBytes(bytes) {
     idx += 1;
   }
   return `${value.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
+function formatClock(seconds = 0) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) {
+    return "00:00";
+  }
+  const whole = Math.floor(value);
+  const h = Math.floor(whole / 3600);
+  const m = Math.floor((whole % 3600) / 60);
+  const s = whole % 60;
+  if (h > 0) {
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function getPlayableDuration(video = state.dp?.video) {
+  if (!video) return 0;
+  const mediaDuration = Number(state.media?.duration || 0);
+  const nativeDuration = Number(video.duration || 0);
+  if (Number.isFinite(nativeDuration) && nativeDuration > 0) {
+    return Math.max(nativeDuration, mediaDuration);
+  }
+  const seekable = video.seekable;
+  if (seekable && seekable.length > 0) {
+    const seekEnd = Number(seekable.end(seekable.length - 1) || 0);
+    if (Number.isFinite(seekEnd) && seekEnd > 0) {
+      return Math.max(seekEnd, mediaDuration);
+    }
+  }
+  return mediaDuration;
+}
+
+function updateDPlayerTimeline(currentTime, duration) {
+  const container = state.dp?.container;
+  if (!container) return;
+  const ptime = container.querySelector(".dplayer-ptime");
+  if (ptime) {
+    ptime.textContent = `${formatClock(currentTime)} / ${duration > 0 ? formatClock(duration) : "--:--"}`;
+  }
+  if (duration > 0) {
+    const percent = Math.max(0, Math.min(100, (currentTime / duration) * 100));
+    const played = container.querySelector(".dplayer-played");
+    if (played) {
+      played.style.width = `${percent}%`;
+    }
+  }
+}
+
+function updateTransportControls(previewTime = null) {
+  const video = state.dp?.video;
+  const duration = getPlayableDuration(video);
+  const currentTime = Number(video?.currentTime || 0);
+  const shownCurrent = previewTime == null ? currentTime : Number(previewTime || 0);
+
+  refs.timeCurrentLabel.textContent = formatClock(shownCurrent);
+  refs.timeDurationLabel.textContent = duration > 0 ? formatClock(duration) : "--:--";
+  if (!state.transportDragging) {
+    if (duration > 0) {
+      const ratio = Math.max(0, Math.min(1, currentTime / duration));
+      refs.seekRange.value = String(Math.round(ratio * 1000));
+    } else {
+      refs.seekRange.value = "0";
+    }
+  }
+  refs.seekRange.disabled = !(duration > 0);
+  updateDPlayerTimeline(currentTime, duration);
+}
+
+function seekTo(targetTime, reason = "seek") {
+  if (!state.dp?.video) return;
+  const video = state.dp.video;
+  const duration = getPlayableDuration(video);
+  let nextTime = Number(targetTime || 0);
+  if (!Number.isFinite(nextTime)) return;
+  nextTime = Math.max(0, nextTime);
+  if (duration > 0) {
+    nextTime = Math.min(nextTime, Math.max(0, duration - 0.05));
+  }
+
+  withLocalBlock(() => {
+    const nativeDuration = Number(video.duration || 0);
+    const forceNativeSeek =
+      String(video.dataset?.sourceType || "") === "mpegts" || !(Number.isFinite(nativeDuration) && nativeDuration > 0);
+    if (forceNativeSeek) {
+      video.currentTime = nextTime;
+      return;
+    }
+    try {
+      state.dp.seek(nextTime);
+    } catch {
+      video.currentTime = nextTime;
+    }
+  });
+  updateTransportControls();
+  emitSync(reason);
+}
+
+function seekBy(deltaSeconds) {
+  const current = Number(state.dp?.video?.currentTime || 0);
+  seekTo(current + Number(deltaSeconds || 0), "seek");
+}
+
+function bindDPlayerTimelineFallback() {
+  const container = state.dp?.container;
+  if (!container || container.dataset.timelineBound === "1") return;
+  const barWrap = container.querySelector(".dplayer-bar-wrap");
+  if (!barWrap) return;
+  const onClick = (event) => {
+    const video = state.dp?.video;
+    if (!video) return;
+    const nativeDuration = Number(video.duration || 0);
+    if (Number.isFinite(nativeDuration) && nativeDuration > 0) {
+      return;
+    }
+    const duration = getPlayableDuration(video);
+    if (!(duration > 0)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const rect = barWrap.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    seekTo(duration * ratio, "seek");
+  };
+  barWrap.addEventListener("click", onClick, true);
+  container.dataset.timelineBound = "1";
 }
 
 function guessVideoType(url) {
@@ -476,10 +609,24 @@ function ensurePlayer(sourceUrl = "") {
         },
         {
           enableWorker: false,
-          autoCleanupSourceBuffer: true
+          autoCleanupSourceBuffer: true,
+          seekType: "range",
+          accurateSeek: true,
+          lazyLoad: false
         }
       );
       state.mpegtsPlayer = player;
+      player.on(window.mpegts.Events.MEDIA_INFO, (mediaInfo) => {
+        const rawDuration = Number(mediaInfo?.duration || 0);
+        if (Number.isFinite(rawDuration) && rawDuration > 0) {
+          const durationSeconds = rawDuration > 1000 ? rawDuration / 1000 : rawDuration;
+          state.media = {
+            ...(state.media || {}),
+            duration: Math.max(Number(state.media?.duration || 0), durationSeconds)
+          };
+          updateTransportControls();
+        }
+      });
       player.on(window.mpegts.Events.ERROR, (type, detail) => {
         if (String(type) === "NetworkError") {
           setHint(`TS 播放网络错误：${detail || "unknown"}，正在切换备用源...`);
@@ -538,12 +685,24 @@ function ensurePlayer(sourceUrl = "") {
   video.addEventListener("play", () => {
     state.autoPlayBlocked = false;
     emitSync("play");
+    updateTransportControls();
   });
   video.addEventListener("pause", () => {
     emitSync("pause");
+    updateTransportControls();
+  });
+  video.addEventListener("timeupdate", () => {
+    updateTransportControls();
+  });
+  video.addEventListener("durationchange", () => {
+    updateTransportControls();
+  });
+  video.addEventListener("progress", () => {
+    updateTransportControls();
   });
   video.addEventListener("seeked", () => {
     emitSync("seek");
+    updateTransportControls();
   });
   video.addEventListener("ratechange", () => {
     emitSync("ratechange");
@@ -556,6 +715,7 @@ function ensurePlayer(sourceUrl = "") {
   });
   video.addEventListener("loadedmetadata", () => {
     state.playerReady = true;
+    updateTransportControls();
     if (state.pendingSync) {
       applyRemoteSync(state.pendingSync, true);
       state.pendingSync = null;
@@ -566,6 +726,8 @@ function ensurePlayer(sourceUrl = "") {
   state.dp.on("fullscreen_cancel", () => handlePlayerFullscreen(false));
   state.dp.on("webfullscreen", () => handlePlayerFullscreen(true));
   state.dp.on("webfullscreen_cancel", () => handlePlayerFullscreen(false));
+  bindDPlayerTimelineFallback();
+  updateTransportControls();
 
   return state.dp;
 }
@@ -643,6 +805,7 @@ async function switchToCurrentSource(autoPlay = false) {
     dp.video.dataset.sourceType = sourceType;
   }
   state.playerReady = false;
+  updateTransportControls(0);
   if (autoPlay) {
     requestPlayWithFallback(false).catch(() => {});
   } else {
@@ -734,6 +897,7 @@ async function setMedia(media, broadcast) {
   }
   state.sourceIndex = 0;
   await switchToCurrentSource(false);
+  updateTransportControls(0);
   updateOverlayHint();
 
   if (broadcast && state.joined && state.socket) {
@@ -840,7 +1004,15 @@ function applyRemoteSync(syncState, forceSeek = false) {
 
     if (!throttleBlockedSeek && (forceSeek || drift > state.syncDriftThreshold || syncState.reason === "seek")) {
       try {
-        state.dp.seek(Math.max(0, targetTime));
+        const seekTarget = Math.max(0, targetTime);
+        const nativeDuration = Number(video.duration || 0);
+        const forceNativeSeek =
+          String(video.dataset?.sourceType || "") === "mpegts" || !(Number.isFinite(nativeDuration) && nativeDuration > 0);
+        if (forceNativeSeek) {
+          video.currentTime = seekTarget;
+        } else {
+          state.dp.seek(seekTarget);
+        }
         if (syncState.playing && state.autoPlayBlocked && video.paused) {
           state.blockedSyncSeekAt = nowTick;
         }
@@ -858,6 +1030,7 @@ function applyRemoteSync(syncState, forceSeek = false) {
     }
   });
 
+  updateTransportControls();
   setHint(`同步漂移 ${drift.toFixed(2)}s`);
 }
 
@@ -1109,6 +1282,43 @@ function bindActions() {
     loadFolder(currentFolder().id);
   });
 
+  refs.seekBackBtn.addEventListener("click", () => seekBy(-10));
+  refs.seekForwardBtn.addEventListener("click", () => seekBy(10));
+  refs.seekRange.addEventListener("pointerdown", () => {
+    state.transportDragging = true;
+  });
+  refs.seekRange.addEventListener("pointerup", () => {
+    state.transportDragging = false;
+    updateTransportControls();
+  });
+  refs.seekRange.addEventListener("pointercancel", () => {
+    state.transportDragging = false;
+    updateTransportControls();
+  });
+  refs.seekRange.addEventListener("input", () => {
+    const duration = getPlayableDuration(state.dp?.video);
+    if (!(duration > 0)) {
+      refs.timeCurrentLabel.textContent = "00:00";
+      return;
+    }
+    state.transportDragging = true;
+    const ratio = Number(refs.seekRange.value || 0) / 1000;
+    const preview = Math.max(0, Math.min(duration, ratio * duration));
+    refs.timeCurrentLabel.textContent = formatClock(preview);
+  });
+  refs.seekRange.addEventListener("change", () => {
+    const duration = getPlayableDuration(state.dp?.video);
+    if (!(duration > 0)) {
+      state.transportDragging = false;
+      updateTransportControls();
+      return;
+    }
+    const ratio = Number(refs.seekRange.value || 0) / 1000;
+    seekTo(duration * ratio, "seek");
+    state.transportDragging = false;
+    updateTransportControls();
+  });
+
   refs.chatSendBtn.addEventListener("click", sendChat);
   refs.chatInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") sendChat();
@@ -1306,7 +1516,7 @@ async function bootstrap() {
 
   try {
     const cfg = await fetchJson("/api/cx/config");
-    state.playMode = String(cfg?.config?.playMode || "presigned-url");
+    state.playMode = String(cfg?.config?.playMode || "signed-header");
     if (shouldUseSignedHeaderBridge() && !state.serviceWorkerReady) {
       await ensureDirectS3Bridge();
     }
