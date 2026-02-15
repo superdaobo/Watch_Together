@@ -472,6 +472,19 @@ function getCurrentSource() {
   return state.sourceCandidates[state.sourceIndex] || "";
 }
 
+function buildPlaybackFailureHint() {
+  const source = getCurrentSource();
+  try {
+    const parsed = new URL(source, location.origin);
+    if (parsed.hostname) {
+      return `当前视频地址均播放失败，可能无法访问 ${parsed.hostname}（DNS/网络异常）`;
+    }
+  } catch {
+    // ignore
+  }
+  return "当前视频所有地址均播放失败";
+}
+
 function isSignedQueryUrl(url) {
   const raw = String(url || "");
   return /[?&]x-amz-signature=/i.test(raw) || /[?&]x-amz-algorithm=/i.test(raw);
@@ -560,7 +573,7 @@ function tryNextSourceAfterError() {
   if (next >= state.sourceCandidates.length) {
     recoverDirectPlaybackSource().then((ok) => {
       if (!ok) {
-        setHint("当前视频所有地址均播放失败");
+        setHint(buildPlaybackFailureHint());
       }
     });
     return;
