@@ -2,33 +2,55 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>超星同步放映室</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>超星同步放映厅</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <div id="accessGate" class="gate-overlay">
+      <div class="gate-card">
+        <h1>进入放映厅</h1>
+        <p>请输入访问密码后使用全部功能</p>
+        <div class="gate-row">
+          <input id="accessPasswordInput" type="password" placeholder="请输入密码" maxlength="32" />
+          <button id="accessEnterBtn" class="btn primary">进入</button>
+        </div>
+        <p id="gateHint" class="hint">默认密码为 520</p>
+      </div>
+    </div>
+
+    <div id="appRoot" class="app-shell hidden">
       <header class="topbar">
         <div class="brand">
           <span class="brand-badge">SYNC</span>
           <div>
-            <h1>超星同步放映室</h1>
-            <p>双人实时同播 + 聊天 + 弹幕</p>
+            <h1>超星同步放映厅</h1>
+            <p>自定义播放器 · 房间同步 · 聊天与弹幕</p>
           </div>
         </div>
-        <div class="join-row">
-          <input id="roomIdInput" type="text" placeholder="房间号（例如 room-520）" maxlength="64" />
-          <input id="nicknameInput" type="text" placeholder="昵称" maxlength="32" />
-          <button id="joinBtn" class="btn primary">加入房间</button>
-          <button id="leaveBtn" class="btn ghost">离开</button>
-          <button id="claimBtn" class="btn ghost">成为主控</button>
+        <div class="status-line">
+          <span id="connectState" class="pill">未连接</span>
+          <span id="roomState" class="pill">未加入房间</span>
+          <span id="controllerState" class="pill">主控：--</span>
         </div>
       </header>
 
-      <section class="status-line">
-        <span id="connectState" class="pill">连接中</span>
-        <span id="roomState" class="pill">未加入房间</span>
-        <span id="controllerState" class="pill">主控：--</span>
+      <section class="panel lobby-panel">
+        <div class="panel-title-row">
+          <h2>大厅</h2>
+          <button id="refreshLobbyBtn" class="btn ghost small">刷新房间</button>
+        </div>
+        <div class="lobby-create">
+          <input id="nicknameInput" type="text" maxlength="32" placeholder="昵称" />
+          <button id="randomNicknameBtn" class="btn ghost small">随机昵称</button>
+          <input id="roomIdInput" type="text" maxlength="64" placeholder="房间号" />
+          <button id="randomRoomBtn" class="btn ghost small">随机房间</button>
+          <button id="quickCreateBtn" class="btn primary">快速建房</button>
+          <button id="joinBtn" class="btn primary">加入房间</button>
+          <button id="leaveBtn" class="btn ghost">离开房间</button>
+          <button id="claimBtn" class="btn ghost">抢主控</button>
+        </div>
+        <div id="lobbyRoomList" class="lobby-list"></div>
       </section>
 
       <main class="layout">
@@ -46,35 +68,46 @@
 
         <section class="panel player-panel">
           <div id="videoStage" class="video-stage">
-            <video id="videoEl" controls playsinline preload="metadata"></video>
+            <video id="videoEl" playsinline preload="metadata"></video>
             <div id="danmakuLayer" class="danmaku-layer"></div>
+            <div id="playerOverlayHint" class="player-overlay-hint">请从左侧选择视频文件</div>
             <div id="fullscreenDanmakuBar" class="fullscreen-danmaku-bar hidden">
-              <input id="fullscreenDanmakuInput" type="text" maxlength="80" placeholder="发个弹幕吧..." />
+              <input id="fullscreenDanmakuInput" type="text" maxlength="80" placeholder="全屏弹幕输入..." />
               <button id="fullscreenDanmakuSendBtn" class="btn primary">发送</button>
+              <button id="fullscreenExitBtn" class="btn ghost">退出全屏</button>
             </div>
           </div>
-          <div class="player-actions">
+
+          <div class="custom-controls">
+            <button id="playToggleBtn" class="btn ghost">播放</button>
+            <span id="currentTimeLabel" class="time-label">00:00</span>
+            <input id="progressRange" type="range" min="0" max="1000" value="0" />
+            <span id="durationLabel" class="time-label">00:00</span>
+            <button id="rateBtn" class="btn ghost">1.0x</button>
+            <input id="volumeRange" type="range" min="0" max="1" step="0.01" value="1" />
+            <button id="muteBtn" class="btn ghost">静音</button>
             <button id="fullscreenBtn" class="btn ghost">全屏</button>
+          </div>
+
+          <div class="player-actions">
             <button id="sendDanmakuBtn" class="btn ghost">发送弹幕</button>
             <input id="danmakuColorInput" type="color" value="#ffffff" />
-            <span id="syncHint" class="hint">等待同步...</span>
-          </div>
-          <div class="danmaku-input-row">
             <input id="danmakuInput" type="text" maxlength="80" placeholder="输入弹幕（回车发送）" />
             <button id="sendDanmakuBtn2" class="btn primary">发送</button>
+            <span id="syncHint" class="hint">等待同步...</span>
           </div>
         </section>
 
         <aside class="panel chat-panel">
           <div class="panel-title-row">
-            <h2>实时聊天</h2>
+            <h2>聊天</h2>
             <span id="memberCount" class="hint">在线 0</span>
           </div>
           <div id="memberList" class="member-list"></div>
           <div id="chatList" class="chat-list"></div>
           <div class="emoji-row" id="emojiRow"></div>
           <div class="chat-input-row">
-            <input id="chatInput" type="text" maxlength="500" placeholder="输入消息，回车发送" />
+            <input id="chatInput" type="text" maxlength="500" placeholder="输入消息（回车发送）" />
             <button id="chatSendBtn" class="btn primary">发送</button>
           </div>
         </aside>
@@ -82,7 +115,6 @@
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

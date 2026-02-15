@@ -306,6 +306,21 @@ class ChaoxingClient {
     };
   }
 
+  async getPlaybackHeaders(rangeHeaderValue = "") {
+    this.validateReady();
+    const cookie = await this.ensureCookie();
+    const headers = {
+      Accept: "*/*",
+      Referer: REFERER,
+      "User-Agent": USER_AGENT,
+      Cookie: cookie
+    };
+    if (rangeHeaderValue) {
+      headers.Range = String(rangeHeaderValue);
+    }
+    return headers;
+  }
+
   getSafeConfig() {
     return {
       bbsid: this.bbsid,

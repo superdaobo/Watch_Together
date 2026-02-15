@@ -57,10 +57,40 @@ function createRoomHub(io, options = {}) {
   const chatLimit = clampNumber(options.chatLimit, 20, 5000, 300);
   const danmakuLimit = clampNumber(options.danmakuLimit, 20, 5000, 500);
 
+  function getMemberList(room) {
+    return Array.from(room.members.values()).sort((a, b) => a.joinedAt - b.joinedAt);
+  }
+
+  function getLobbyRooms() {
+    return Array.from(rooms.values())
+      .map((room) => ({
+        roomId: room.roomId,
+        onlineCount: room.members.size,
+        controllerId: room.controllerId || "",
+        hasMedia: Boolean(room.media?.url),
+        mediaName: room.media?.name || "",
+        updatedAt: room.updatedAt || now()
+      }))
+      .sort((a, b) => {
+        if (a.onlineCount !== b.onlineCount) {
+          return b.onlineCount - a.onlineCount;
+        }
+        return b.updatedAt - a.updatedAt;
+      });
+  }
+
+  function emitLobbySnapshot() {
+    io.emit("lobby:update", {
+      rooms: getLobbyRooms(),
+      serverTime: now()
+    });
+  }
+
   function getOrCreateRoom(roomId) {
     if (rooms.has(roomId)) {
       return rooms.get(roomId);
     }
+
     const room = {
       roomId,
       members: new Map(),
@@ -68,14 +98,11 @@ function createRoomHub(io, options = {}) {
       media: null,
       syncState: createDefaultState(),
       chatHistory: [],
-      danmakuHistory: []
+      danmakuHistory: [],
+      updatedAt: now()
     };
     rooms.set(roomId, room);
     return room;
-  }
-
-  function getMemberList(room) {
-    return Array.from(room.members.values()).sort((a, b) => a.joinedAt - b.joinedAt);
   }
 
   function emitRoomMeta(roomId) {
@@ -83,12 +110,16 @@ function createRoomHub(io, options = {}) {
     if (!room) {
       return;
     }
+
     io.to(roomId).emit("room:member_update", {
       roomId,
       controllerId: room.controllerId,
       members: getMemberList(room),
       serverTime: now()
     });
+
+    room.updatedAt = now();
+    emitLobbySnapshot();
   }
 
   function leaveRoom(socket) {
@@ -96,15 +127,16 @@ function createRoomHub(io, options = {}) {
     if (!joinedRoomId) {
       return;
     }
+
     const room = rooms.get(joinedRoomId);
+    socket.data.roomId = "";
+
     if (!room) {
-      socket.data.roomId = "";
       return;
     }
 
     room.members.delete(socket.id);
     socket.leave(joinedRoomId);
-    socket.data.roomId = "";
 
     if (room.controllerId === socket.id) {
       const next = getMemberList(room)[0];
@@ -113,14 +145,27 @@ function createRoomHub(io, options = {}) {
 
     if (room.members.size === 0) {
       rooms.delete(joinedRoomId);
+      emitLobbySnapshot();
       return;
     }
+
     emitRoomMeta(joinedRoomId);
   }
 
   io.on("connection", (socket) => {
     socket.data.roomId = "";
     socket.data.nickname = "";
+
+    socket.emit("lobby:update", {
+      rooms: getLobbyRooms(),
+      serverTime: now()
+    });
+
+    socket.on("lobby:get", (ack) => {
+      if (typeof ack === "function") {
+        ack({ ok: true, rooms: getLobbyRooms(), serverTime: now() });
+      }
+    });
 
     socket.on("room:join", (payload = {}, ack) => {
       try {
@@ -133,12 +178,11 @@ function createRoomHub(io, options = {}) {
         leaveRoom(socket);
 
         const room = getOrCreateRoom(roomId);
-        const member = {
+        room.members.set(socket.id, {
           socketId: socket.id,
           nickname,
           joinedAt: now()
-        };
-        room.members.set(socket.id, member);
+        });
         if (!room.controllerId) {
           room.controllerId = socket.id;
         }
@@ -146,6 +190,7 @@ function createRoomHub(io, options = {}) {
         socket.join(roomId);
         socket.data.roomId = roomId;
         socket.data.nickname = nickname;
+        room.updatedAt = now();
 
         const snapshot = {
           selfId: socket.id,
@@ -178,44 +223,37 @@ function createRoomHub(io, options = {}) {
     socket.on("controller:claim", (ack) => {
       const roomId = socket.data.roomId;
       if (!roomId) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "尚未加入房间" });
-        }
+        ack?.({ ok: false, message: "尚未加入房间" });
         return;
       }
+
       const room = rooms.get(roomId);
       if (!room) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "房间不存在" });
-        }
+        ack?.({ ok: false, message: "房间不存在" });
         return;
       }
+
       room.controllerId = socket.id;
+      room.updatedAt = now();
       emitRoomMeta(roomId);
-      if (typeof ack === "function") {
-        ack({ ok: true });
-      }
+      ack?.({ ok: true });
     });
 
     socket.on("media:change", (payload = {}, ack) => {
       const roomId = socket.data.roomId;
       if (!roomId) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "尚未加入房间" });
-        }
+        ack?.({ ok: false, message: "尚未加入房间" });
         return;
       }
+
       const room = rooms.get(roomId);
       if (!room) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "房间不存在" });
-        }
+        ack?.({ ok: false, message: "房间不存在" });
         return;
       }
+
       if (room.controllerId && room.controllerId !== socket.id) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "只有主控可以切换视频" });
-        }
+        ack?.({ ok: false, message: "只有主控可以切换视频" });
         return;
       }
 
@@ -229,11 +267,10 @@ function createRoomHub(io, options = {}) {
         changedAt: now()
       };
       if (!media.url) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "缺少可播放地址" });
-        }
+        ack?.({ ok: false, message: "缺少可播放地址" });
         return;
       }
+
       room.media = media;
       room.syncState = {
         playing: false,
@@ -242,42 +279,35 @@ function createRoomHub(io, options = {}) {
         serverTime: now(),
         reason: "media-change"
       };
+      room.updatedAt = now();
 
       io.to(roomId).emit("media:change", {
         media: room.media,
         syncState: room.syncState,
         serverTime: now()
       });
-      if (typeof ack === "function") {
-        ack({ ok: true });
-      }
+      emitLobbySnapshot();
+      ack?.({ ok: true });
     });
 
     socket.on("sync:update", (payload = {}, ack) => {
       const roomId = socket.data.roomId;
       if (!roomId) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "尚未加入房间" });
-        }
+        ack?.({ ok: false, message: "尚未加入房间" });
         return;
       }
+
       const room = rooms.get(roomId);
       if (!room) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "房间不存在" });
-        }
+        ack?.({ ok: false, message: "房间不存在" });
         return;
       }
       if (room.controllerId && room.controllerId !== socket.id) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "只有主控可以同步进度" });
-        }
+        ack?.({ ok: false, message: "只有主控可以同步进度" });
         return;
       }
       if (!room.media) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "当前无视频" });
-        }
+        ack?.({ ok: false, message: "当前无视频" });
         return;
       }
 
@@ -288,32 +318,27 @@ function createRoomHub(io, options = {}) {
         reason: cleanText(payload.reason, 40) || "sync",
         serverTime: now()
       };
+      room.updatedAt = now();
 
       socket.to(roomId).emit("sync:state", {
         ...room.syncState,
         mediaId: room.media.id,
         fromSocketId: socket.id
       });
-      if (typeof ack === "function") {
-        ack({ ok: true, serverTime: room.syncState.serverTime });
-      }
+      ack?.({ ok: true, serverTime: room.syncState.serverTime });
     });
 
     socket.on("chat:send", (payload = {}, ack) => {
       const roomId = socket.data.roomId;
       const room = roomId ? rooms.get(roomId) : null;
       if (!room) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "尚未加入房间" });
-        }
+        ack?.({ ok: false, message: "尚未加入房间" });
         return;
       }
 
       const text = cleanText(payload.text, 500);
       if (!text) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "消息不能为空" });
-        }
+        ack?.({ ok: false, message: "消息不能为空" });
         return;
       }
 
@@ -327,26 +352,21 @@ function createRoomHub(io, options = {}) {
       };
       pushWithLimit(room.chatHistory, message, chatLimit);
       io.to(roomId).emit("chat:new", message);
-      if (typeof ack === "function") {
-        ack({ ok: true });
-      }
+      room.updatedAt = now();
+      ack?.({ ok: true });
     });
 
     socket.on("danmaku:send", (payload = {}, ack) => {
       const roomId = socket.data.roomId;
       const room = roomId ? rooms.get(roomId) : null;
       if (!room) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "尚未加入房间" });
-        }
+        ack?.({ ok: false, message: "尚未加入房间" });
         return;
       }
 
       const text = cleanText(payload.text, 80);
       if (!text) {
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "弹幕不能为空" });
-        }
+        ack?.({ ok: false, message: "弹幕不能为空" });
         return;
       }
 
@@ -361,17 +381,18 @@ function createRoomHub(io, options = {}) {
       };
       pushWithLimit(room.danmakuHistory, item, danmakuLimit);
       io.to(roomId).emit("danmaku:new", item);
-      if (typeof ack === "function") {
-        ack({ ok: true });
-      }
+      room.updatedAt = now();
+      ack?.({ ok: true });
     });
 
     socket.on("disconnect", () => {
       leaveRoom(socket);
     });
   });
+
+  return {
+    getLobbyRooms
+  };
 }
 
-module.exports = {
-  createRoomHub
-};
+module.exports = { createRoomHub };
