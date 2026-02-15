@@ -79,6 +79,12 @@ function normalizePlayMode(rawMode) {
   return "presigned-url";
 }
 
+function buildRegionCandidates(primaryRegion) {
+  const fallback = ["us-east-1", "cn-north-1", "cn-east-1", "ap-southeast-1"];
+  const primary = String(primaryRegion || "").trim() || "us-east-1";
+  return [primary, ...fallback].filter((region, index, list) => region && list.indexOf(region) === index);
+}
+
 function buildQueryString(query = {}) {
   const parts = [];
   for (const [key, value] of Object.entries(query)) {
@@ -107,7 +113,7 @@ class S3MediaService {
     this.urlExpireSeconds = Number(options.urlExpireSeconds || 1800);
     this.maxKeys = Number(options.maxKeys || 1000);
     this.client = null;
-    this.signer = null;
+    this.signers = new Map();
     this.endpointUrl = null;
   }
 
@@ -126,7 +132,7 @@ class S3MediaService {
       this.maxKeys = Math.min(5000, Math.max(50, Math.floor(next.maxKeys)));
     }
     this.client = null;
-    this.signer = null;
+    this.signers = new Map();
     this.endpointUrl = null;
   }
 
@@ -164,12 +170,15 @@ class S3MediaService {
     return this.endpointUrl;
   }
 
-  getSigner() {
+  getSigner(regionOverride) {
     this.validateReady();
-    if (!this.signer) {
-      this.signer = new SignatureV4({
+    const region = String(regionOverride || this.region || "us-east-1").trim() || "us-east-1";
+    if (!this.signers.has(region)) {
+      this.signers.set(
+        region,
+        new SignatureV4({
         service: "s3",
-        region: this.region || "us-east-1",
+        region,
         credentials: {
           accessKeyId: this.accessKeyId,
           secretAccessKey: this.secretAccessKey
@@ -177,9 +186,10 @@ class S3MediaService {
         sha256: Hash.bind(null, "sha256"),
         // cstcloud 对 UTF-8 key 的兼容实现要求按已编码 path 进行签名
         uriEscapePath: false
-      });
+        })
+      );
     }
-    return this.signer;
+    return this.signers.get(region);
   }
 
   buildObjectPath(fileId) {
@@ -206,6 +216,7 @@ class S3MediaService {
     if (method !== "GET") {
       throw new Error("预签名直连仅支持 GET 方法");
     }
+    const region = String(options.region || this.region || "us-east-1").trim() || "us-east-1";
     const endpoint = this.getEndpointUrl();
     const expiresIn = Math.min(86400, Math.max(60, Math.floor(Number(options.expiresIn || this.urlExpireSeconds))));
     const request = new HttpRequest({
@@ -221,7 +232,7 @@ class S3MediaService {
         host: endpoint.host
       }
     });
-    const presigned = await this.getSigner().presign(request, { expiresIn });
+    const presigned = await this.getSigner(region).presign(request, { expiresIn });
     const queryString = buildQueryString(presigned.query || {});
     return queryString ? `${endpoint.origin}${presigned.path}?${queryString}` : `${endpoint.origin}${presigned.path}`;
   }
@@ -361,8 +372,25 @@ class S3MediaService {
       // ignore head error, keep link generation
     }
     let playUrl = this.buildLocalPlayUrl(key);
+    let candidateUrls = [playUrl];
     if (this.playMode === "presigned-url") {
-      playUrl = await this.createPresignedObjectUrl(key, { method: "GET" });
+      const regionCandidates = buildRegionCandidates(this.region);
+      const presignedUrls = [];
+      for (const region of regionCandidates) {
+        try {
+          const url = await this.createPresignedObjectUrl(key, { method: "GET", region });
+          if (url && !presignedUrls.includes(url)) {
+            presignedUrls.push(url);
+          }
+        } catch {
+          // ignore single-region sign failure and continue fallback
+        }
+      }
+      if (!presignedUrls.length) {
+        throw new Error("生成预签名播放地址失败");
+      }
+      playUrl = presignedUrls[0];
+      candidateUrls = presignedUrls;
     }
     const directUrl = this.buildObjectUrl(key);
 
@@ -372,7 +400,7 @@ class S3MediaService {
       directUrl,
       previewUrl: playUrl,
       downloadUrl: "",
-      candidateUrls: [playUrl],
+      candidateUrls,
       duration: 0,
       fileStatus: "success",
       contentLength
