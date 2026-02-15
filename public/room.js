@@ -21,7 +21,8 @@ const state = {
   heartbeatTimer: null,
   sourceCandidates: [],
   sourceIndex: 0,
-  hls: null
+  hls: null,
+  relayFallbackUsed: false
 };
 
 const refs = {
@@ -359,6 +360,36 @@ function getCurrentSource() {
   return state.sourceCandidates[state.sourceIndex] || "";
 }
 
+function buildRelaySource(fileId, sourceIndex = 0) {
+  const fid = encodeURIComponent(String(fileId || ""));
+  const idx = Number.isFinite(sourceIndex) ? Math.max(0, Math.floor(sourceIndex)) : 0;
+  return `/api/cx/relay?fileId=${fid}&source=${idx}&ts=${Date.now()}`;
+}
+
+function handlePlaybackError() {
+  const hasNextDirect = state.sourceIndex + 1 < state.sourceCandidates.length;
+  if (hasNextDirect) {
+    tryNextSourceAfterError();
+    return;
+  }
+
+  if (!state.relayFallbackUsed && state.media?.fileId) {
+    const wasPlaying = !refs.videoEl.paused;
+    state.relayFallbackUsed = true;
+    state.sourceCandidates = [buildRelaySource(state.media.fileId)];
+    state.sourceIndex = 0;
+    setHint("鐩磋繛鍙楅檺锛屾鍦ㄥ垏鎹㈠吋瀹规挱鏀鹃€氶亾...");
+    applySource(getCurrentSource());
+    refs.videoEl.load();
+    if (wasPlaying) {
+      refs.videoEl.play().catch(() => {});
+    }
+    return;
+  }
+
+  tryNextSourceAfterError();
+}
+
 function tryNextSourceAfterError() {
   const nextIndex = state.sourceIndex + 1;
   if (nextIndex >= state.sourceCandidates.length) {
@@ -391,6 +422,7 @@ async function resolveMediaByFileId(fileId, fileName = "", fromMedia = null) {
 
 async function setMedia(media, broadcast) {
   state.media = media;
+  state.relayFallbackUsed = false;
   clearDanmakuLayer();
   state.sourceCandidates = (media.candidateUrls || []).filter(Boolean);
   if (!state.sourceCandidates.length && media.url) {
@@ -711,7 +743,7 @@ function bindVideoEvents() {
     emitSync("seek");
   });
   refs.videoEl.addEventListener("error", () => {
-    tryNextSourceAfterError();
+    handlePlaybackError();
   });
 }
 

@@ -3,6 +3,7 @@ require("dotenv").config();
 const crypto = require("node:crypto");
 const http = require("node:http");
 const path = require("node:path");
+const { Readable } = require("node:stream");
 
 const cors = require("cors");
 const express = require("express");
@@ -18,8 +19,103 @@ const APP_ACCESS_PASSWORD = String(process.env.APP_ACCESS_PASSWORD || "520");
 const SYNC_DRIFT_THRESHOLD = Number(process.env.SYNC_DRIFT_THRESHOLD || 0.4);
 const ROOM_CHAT_LIMIT = Number(process.env.ROOM_CHAT_LIMIT || 300);
 const ROOM_DANMAKU_LIMIT = Number(process.env.ROOM_DANMAKU_LIMIT || 500);
+const RELAY_LINK_CACHE_MS = Number(process.env.CX_RELAY_LINK_CACHE_MS || 45000);
+const RELAY_REFERER = String(process.env.CX_MEDIA_REFERER || "https://chaoxing.com/");
+const RELAY_USER_AGENT = String(
+  process.env.CX_MEDIA_UA ||
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+);
 
 const accessSessions = new Map();
+const relayLinkCache = new Map();
+
+function isAllowedRelayUrl(rawUrl) {
+  const input = String(rawUrl || "").trim();
+  if (!input) return false;
+  try {
+    const parsed = new URL(input);
+    const protocolOk = parsed.protocol === "https:" || parsed.protocol === "http:";
+    const host = parsed.hostname.toLowerCase();
+    const hostOk = host.endsWith(".cldisk.com") || host.endsWith(".chaoxing.com");
+    return protocolOk && hostOk;
+  } catch {
+    return false;
+  }
+}
+
+function pickRelayUrls(link, preferredIndex = 0) {
+  const list = Array.isArray(link?.candidateUrls) ? link.candidateUrls : [];
+  const unique = [];
+  list.forEach((item) => {
+    const target = String(item || "").trim();
+    if (target && isAllowedRelayUrl(target) && !unique.includes(target)) {
+      unique.push(target);
+    }
+  });
+  const fallback = String(link?.url || "").trim();
+  if (fallback && isAllowedRelayUrl(fallback) && !unique.includes(fallback)) {
+    unique.push(fallback);
+  }
+  if (!unique.length) {
+    return [];
+  }
+  const safeIndex = Number.isFinite(preferredIndex) ? Math.max(0, Math.floor(preferredIndex)) : 0;
+  if (safeIndex <= 0 || safeIndex >= unique.length) {
+    return unique;
+  }
+  return [unique[safeIndex], ...unique.filter((_, idx) => idx !== safeIndex)];
+}
+
+async function getPlayableLinkCached(fileId, forceRefresh = false) {
+  const key = String(fileId || "").trim();
+  if (!key) {
+    throw new Error("fileId 涓嶈兘涓虹┖");
+  }
+  if (!forceRefresh) {
+    const cache = relayLinkCache.get(key);
+    if (cache && cache.expiresAt > Date.now()) {
+      return cache.value;
+    }
+  }
+  const value = await chaoxingClient.getPlayableLink(key);
+  relayLinkCache.set(key, {
+    value,
+    expiresAt: Date.now() + RELAY_LINK_CACHE_MS
+  });
+  return value;
+}
+
+async function openRelayStream(urls, incomingRange = "") {
+  const rangeValue = String(incomingRange || "").trim();
+  const baseHeaders = {
+    Accept: "*/*",
+    Referer: RELAY_REFERER,
+    "User-Agent": RELAY_USER_AGENT
+  };
+  if (rangeValue) {
+    baseHeaders.Range = rangeValue;
+  }
+
+  for (const targetUrl of urls) {
+    try {
+      const response = await fetch(targetUrl, {
+        method: "GET",
+        headers: baseHeaders,
+        redirect: "follow"
+      });
+      if (response.status >= 200 && response.status < 400) {
+        return response;
+      }
+      if (response.body) {
+        await response.body.cancel().catch(() => {});
+      }
+    } catch {
+      // ignore and try next
+    }
+  }
+  return null;
+}
 
 function parseCookieHeader(rawCookieHeader = "") {
   return String(rawCookieHeader)
@@ -229,6 +325,7 @@ app.post("/api/cx/reload-config", (req, res) => {
     rootFolderId: typeof body.rootFolderId === "string" ? body.rootFolderId : undefined,
     cookie: typeof body.cookie === "string" ? body.cookie : undefined
   });
+  relayLinkCache.clear();
   res.json({
     ok: true,
     config: chaoxingClient.getSafeConfig()
@@ -262,7 +359,7 @@ app.get("/api/cx/link", async (req, res) => {
       });
       return;
     }
-    const link = await chaoxingClient.getPlayableLink(fileId);
+    const link = await getPlayableLinkCached(fileId);
     res.json({
       ok: true,
       fileId,
@@ -277,6 +374,74 @@ app.get("/api/cx/link", async (req, res) => {
     res.status(500).json({
       ok: false,
       message: error.message || "获取播放地址失败"
+    });
+  }
+});
+
+app.get("/api/cx/relay", async (req, res) => {
+  try {
+    const fileId = String(req.query.fileId || "").trim();
+    const sourceIndex = Number.parseInt(String(req.query.source || "0"), 10);
+    if (!fileId) {
+      res.status(400).json({
+        ok: false,
+        message: "fileId 涓嶈兘涓虹┖"
+      });
+      return;
+    }
+
+    const rangeHeader = String(req.headers.range || "").trim();
+    const firstLink = await getPlayableLinkCached(fileId);
+    let upstream = await openRelayStream(pickRelayUrls(firstLink, sourceIndex), rangeHeader);
+
+    if (!upstream) {
+      const refreshed = await getPlayableLinkCached(fileId, true);
+      upstream = await openRelayStream(pickRelayUrls(refreshed, sourceIndex), rangeHeader);
+    }
+
+    if (!upstream || !upstream.body) {
+      res.status(502).json({
+        ok: false,
+        message: "褰撳墠瑙嗛鏃犳硶寤虹珛鍏煎浼犺緭"
+      });
+      return;
+    }
+
+    res.status(upstream.status);
+    const passHeaders = [
+      "content-type",
+      "content-length",
+      "content-range",
+      "accept-ranges",
+      "cache-control",
+      "etag",
+      "last-modified",
+      "content-disposition"
+    ];
+    passHeaders.forEach((name) => {
+      const value = upstream.headers.get(name);
+      if (value) {
+        res.setHeader(name, value);
+      }
+    });
+    res.setHeader("x-video-relay", "1");
+
+    const stream = Readable.fromWeb(upstream.body);
+    stream.on("error", () => {
+      if (!res.headersSent) {
+        res.status(502).end("relay stream error");
+      } else {
+        res.end();
+      }
+    });
+    res.on("close", () => {
+      stream.destroy();
+    });
+    stream.pipe(res);
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error.message || "瑙嗛鍏煎浼犺緭澶辫触"
     });
   }
 });
