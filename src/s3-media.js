@@ -73,6 +73,28 @@ function sanitizeRange(rawRange) {
   return "";
 }
 
+function normalizePlayMode(rawMode) {
+  const mode = String(rawMode || "").trim().toLowerCase();
+  if (mode === "signed-header") return "signed-header";
+  return "presigned-url";
+}
+
+function buildQueryString(query = {}) {
+  const parts = [];
+  for (const [key, value] of Object.entries(query)) {
+    if (value == null) continue;
+    const encodedKey = encodeURIComponent(String(key));
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        parts.push(`${encodedKey}=${encodeURIComponent(String(item))}`);
+      }
+      continue;
+    }
+    parts.push(`${encodedKey}=${encodeURIComponent(String(value))}`);
+  }
+  return parts.join("&");
+}
+
 class S3MediaService {
   constructor(options = {}) {
     this.endpoint = ensureEndpoint(options.endpoint || "");
@@ -81,6 +103,7 @@ class S3MediaService {
     this.accessKeyId = String(options.accessKeyId || "").trim();
     this.secretAccessKey = String(options.secretAccessKey || "").trim();
     this.forcePathStyle = options.forcePathStyle !== false;
+    this.playMode = normalizePlayMode(options.playMode);
     this.urlExpireSeconds = Number(options.urlExpireSeconds || 1800);
     this.maxKeys = Number(options.maxKeys || 1000);
     this.client = null;
@@ -95,6 +118,7 @@ class S3MediaService {
     if (typeof next.accessKeyId === "string") this.accessKeyId = next.accessKeyId.trim();
     if (typeof next.secretAccessKey === "string") this.secretAccessKey = next.secretAccessKey.trim();
     if (typeof next.forcePathStyle === "boolean") this.forcePathStyle = next.forcePathStyle;
+    if (typeof next.playMode === "string") this.playMode = normalizePlayMode(next.playMode);
     if (typeof next.urlExpireSeconds === "number" && Number.isFinite(next.urlExpireSeconds)) {
       this.urlExpireSeconds = Math.min(86400, Math.max(60, Math.floor(next.urlExpireSeconds)));
     }
@@ -171,6 +195,29 @@ class S3MediaService {
 
   buildLocalPlayUrl(fileId) {
     return `/s3-direct/${encodeURIComponent(String(fileId || "").trim())}`;
+  }
+
+  async createPresignedObjectUrl(fileId, options = {}) {
+    const key = String(fileId || "").trim();
+    if (!key) {
+      throw new Error("缺少 fileId");
+    }
+    const endpoint = this.getEndpointUrl();
+    const method = sanitizeMethod(options.method);
+    const expiresIn = Math.min(86400, Math.max(60, Math.floor(Number(options.expiresIn || this.urlExpireSeconds))));
+    const request = new HttpRequest({
+      protocol: endpoint.protocol,
+      hostname: endpoint.hostname,
+      port: endpoint.port ? Number(endpoint.port) : undefined,
+      method,
+      path: this.buildObjectPath(key),
+      headers: {
+        host: endpoint.host
+      }
+    });
+    const presigned = await this.getSigner().presign(request, { expiresIn });
+    const queryString = buildQueryString(presigned.query || {});
+    return queryString ? `${endpoint.origin}${presigned.path}?${queryString}` : `${endpoint.origin}${presigned.path}`;
   }
 
   async signObjectRequest(fileId, options = {}) {
@@ -307,7 +354,10 @@ class S3MediaService {
     } catch {
       // ignore head error, keep link generation
     }
-    const playUrl = this.buildLocalPlayUrl(key);
+    let playUrl = this.buildLocalPlayUrl(key);
+    if (this.playMode === "presigned-url") {
+      playUrl = await this.createPresignedObjectUrl(key, { method: "GET" });
+    }
     const directUrl = this.buildObjectUrl(key);
 
     return {
@@ -350,7 +400,7 @@ class S3MediaService {
       forcePathStyle: this.forcePathStyle,
       rootFolderId: "-1",
       urlExpireSeconds: this.urlExpireSeconds,
-      playMode: "signed-header",
+      playMode: this.playMode,
       hasCredentials: Boolean(this.accessKeyId && this.secretAccessKey)
     };
   }

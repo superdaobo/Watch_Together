@@ -127,6 +127,7 @@ const mediaService = new S3MediaService({
   accessKeyId: process.env.S3_ACCESS_KEY_ID || "",
   secretAccessKey: process.env.S3_SECRET_ACCESS_KEY || "",
   forcePathStyle: parseBoolean(process.env.S3_FORCE_PATH_STYLE, true),
+  playMode: process.env.S3_PLAY_MODE || "presigned-url",
   urlExpireSeconds: Number(process.env.S3_URL_EXPIRE_SECONDS || 1800),
   maxKeys: Number(process.env.S3_MAX_KEYS || 1000)
 });
@@ -227,6 +228,7 @@ app.post("/api/cx/reload-config", (req, res) => {
     accessKeyId: typeof body.accessKeyId === "string" ? body.accessKeyId : undefined,
     secretAccessKey: typeof body.secretAccessKey === "string" ? body.secretAccessKey : undefined,
     forcePathStyle: typeof body.forcePathStyle === "boolean" ? body.forcePathStyle : undefined,
+    playMode: typeof body.playMode === "string" ? body.playMode : undefined,
     urlExpireSeconds: typeof body.urlExpireSeconds === "number" ? body.urlExpireSeconds : undefined,
     maxKeys: typeof body.maxKeys === "number" ? body.maxKeys : undefined
   });

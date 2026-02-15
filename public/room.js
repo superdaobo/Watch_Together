@@ -34,7 +34,8 @@ const state = {
   serviceWorkerReady: false,
   fullscreenDanmakuPlugin: null,
   directRecoverAttempted: false,
-  sourceRecovering: false
+  sourceRecovering: false,
+  playMode: "presigned-url"
 };
 
 const refs = {
@@ -172,6 +173,10 @@ async function ensureDirectS3Bridge(forceUpdate = false) {
     }
   }
   state.serviceWorkerReady = true;
+}
+
+function shouldUseSignedHeaderBridge() {
+  return state.playMode === "signed-header";
 }
 
 function getIdentityLabel() {
@@ -467,7 +472,26 @@ function getCurrentSource() {
   return state.sourceCandidates[state.sourceIndex] || "";
 }
 
+function isSignedQueryUrl(url) {
+  const raw = String(url || "");
+  return /[?&]x-amz-signature=/i.test(raw) || /[?&]x-amz-algorithm=/i.test(raw);
+}
+
+function isLocalDirectBridgeUrl(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw, location.origin);
+    return parsed.origin === location.origin && parsed.pathname.startsWith("/s3-direct/");
+  } catch {
+    return raw.startsWith("/s3-direct/");
+  }
+}
+
 function appendRetryParam(url, token) {
+  if (!isLocalDirectBridgeUrl(url) || isSignedQueryUrl(url)) {
+    return String(url || "");
+  }
   const suffix = token || String(Date.now());
   try {
     const parsed = new URL(String(url || ""), location.origin);
@@ -508,7 +532,9 @@ async function recoverDirectPlaybackSource() {
   state.directRecoverAttempted = true;
   setHint("直连通道异常，正在自动修复...");
   try {
-    await ensureDirectS3Bridge(true);
+    if (shouldUseSignedHeaderBridge()) {
+      await ensureDirectS3Bridge(true);
+    }
     const recovered = await resolveMediaByFileId(state.media.fileId, state.media.name, state.media);
     const token = String(Date.now());
     state.sourceCandidates = (recovered.candidateUrls || [])
@@ -555,7 +581,7 @@ async function resolveMediaByFileId(fileId, fileName = "", fromMedia = null) {
   if (playUrl && !list.includes(playUrl)) {
     list.unshift(playUrl);
   }
-  if (playUrl) {
+  if (playUrl && shouldUseSignedHeaderBridge() && isLocalDirectBridgeUrl(playUrl)) {
     const retryUrl = appendRetryParam(playUrl, "seed");
     if (retryUrl && !list.includes(retryUrl)) {
       list.push(retryUrl);
@@ -1132,7 +1158,9 @@ async function bootstrap() {
   updateOverlayHint();
 
   try {
-    await ensureDirectS3Bridge();
+    if (shouldUseSignedHeaderBridge()) {
+      await ensureDirectS3Bridge();
+    }
   } catch (error) {
     const message = `S3 直连初始化失败：${error.message}`;
     setHint(message);
@@ -1152,6 +1180,10 @@ async function bootstrap() {
 
   try {
     const cfg = await fetchJson("/api/cx/config");
+    state.playMode = String(cfg?.config?.playMode || "presigned-url");
+    if (shouldUseSignedHeaderBridge() && !state.serviceWorkerReady) {
+      await ensureDirectS3Bridge();
+    }
     state.rootFolderId = String(cfg?.config?.rootFolderId || "-1");
     state.folderStack = [{ id: state.rootFolderId, name: "根目录" }];
     refreshFolderPathText();
