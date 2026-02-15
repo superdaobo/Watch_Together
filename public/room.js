@@ -489,6 +489,12 @@ function ensurePlayer(sourceUrl = "") {
           }
         );
         state.mpegtsPlayer = player;
+        player.on(window.mpegts.Events.ERROR, (type, detail) => {
+          if (String(type) === "NetworkError") {
+            setHint(`TS 鎾斁缃戠粶閿欒锛?{detail || "unknown"}锛屾鍦ㄥ垏鎹㈠鐢ㄦ簮...`);
+            tryNextSourceAfterError().catch(() => {});
+          }
+        });
         player.attachMediaElement(video);
         player.load();
         player.play().catch(() => {});
@@ -542,7 +548,10 @@ function ensurePlayer(sourceUrl = "") {
     emitSync("ratechange");
   });
   video.addEventListener("error", () => {
-    tryNextSourceAfterError();
+    if (String(video.dataset?.sourceType || "") === "mpegts") {
+      return;
+    }
+    tryNextSourceAfterError().catch(() => {});
   });
   video.addEventListener("loadedmetadata", () => {
     state.playerReady = true;
