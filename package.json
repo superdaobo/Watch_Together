@@ -1,0 +1,28 @@
+{
+  "name": "video-online-sync",
+  "version": "1.0.0",
+  "description": "Chaoxing synchronized video watch room with chat, emoji and danmaku",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "chaoxing",
+    "sync-video",
+    "socket-io",
+    "danmaku",
+    "huggingface-spaces"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}
