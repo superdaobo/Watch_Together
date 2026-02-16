@@ -924,7 +924,12 @@ function ensurePlayer(sourceUrl = "") {
           autoCleanupSourceBuffer: true,
           seekType: "range",
           accurateSeek: true,
-          lazyLoad: false
+          lazyLoad: true,
+          lazyLoadMaxDuration: 30,
+          lazyLoadRecoverDuration: 8,
+          rangeLoadZeroStart: true,
+          enableStashBuffer: true,
+          stashInitialSize: 256 * 1024
         }
       );
       state.mpegtsPlayer = player;
