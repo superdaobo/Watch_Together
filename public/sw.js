@@ -26,6 +26,38 @@ function parseFileId(pathname) {
   }
 }
 
+function parseSeekStart(urlObject) {
+  const raw = String(urlObject?.searchParams?.get("_start") || "").trim();
+  if (!raw) return 0;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return 0;
+  return Math.floor(value);
+}
+
+function buildForwardRange(rawRange, startOffset) {
+  const offset = Number(startOffset || 0);
+  if (!(offset > 0)) {
+    return String(rawRange || "").trim();
+  }
+
+  const range = String(rawRange || "").trim();
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(range);
+  if (!match) {
+    return `bytes=${offset}-`;
+  }
+  const relStart = match[1] ? Number(match[1]) : 0;
+  const relEnd = match[2] ? Number(match[2]) : null;
+  if (!Number.isFinite(relStart) || relStart < 0) {
+    return `bytes=${offset}-`;
+  }
+  const absStart = offset + Math.floor(relStart);
+  if (relEnd == null || !Number.isFinite(relEnd) || relEnd < relStart) {
+    return `bytes=${absStart}-`;
+  }
+  const absEnd = offset + Math.floor(relEnd);
+  return `bytes=${absStart}-${absEnd}`;
+}
+
 async function requestSignedHeaders(fileId, method, range) {
   const response = await fetch(SIGN_ENDPOINT, {
     method: "POST",
@@ -55,7 +87,9 @@ async function handleDirectRequest(request) {
   }
 
   const method = String(request.method || "GET").toUpperCase() === "HEAD" ? "HEAD" : "GET";
-  const range = method === "GET" ? String(request.headers.get("range") || "").trim() : "";
+  const startOffset = parseSeekStart(requestUrl);
+  const inputRange = method === "GET" ? String(request.headers.get("range") || "").trim() : "";
+  const range = method === "GET" ? buildForwardRange(inputRange, startOffset) : "";
 
   try {
     const signed = await requestSignedHeaders(fileId, method, range);

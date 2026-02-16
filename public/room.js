@@ -1,7 +1,7 @@
 const EMOJI_LIST = ["😀", "😂", "😎", "🥳", "😭", "❤️", "👍", "🔥", "👀", "🎉"];
 const FULLSCREEN_DANMAKU_AUTO_HIDE_MS = 9000;
 const BLOCKED_SYNC_SEEK_INTERVAL_MS = 1800;
-const SW_VERSION = "20260215-v2";
+const SW_VERSION = "20260216-v3";
 
 const state = {
   socket: null,
@@ -40,7 +40,8 @@ const state = {
   playMode: "signed-header",
   transportDragging: false,
   lockedDuration: 0,
-  durationProbeTask: null
+  durationProbeTask: null,
+  mpegtsTimelineOffset: 0
 };
 if (typeof window !== "undefined") {
   window.__vo_state = state;
@@ -162,6 +163,98 @@ function getDirectBridgeUrl(fileId) {
   const key = String(fileId || "").trim();
   if (!key) return "";
   return `/s3-direct/${encodeURIComponent(key)}`;
+}
+
+function getSourceType(video = state.dp?.video) {
+  return String(video?.dataset?.sourceType || "");
+}
+
+function getMpegtsTimelineOffsetFromSource(sourceUrl) {
+  const raw = String(sourceUrl || "").trim();
+  if (!raw) return 0;
+  try {
+    const parsed = new URL(raw, location.origin);
+    const at = Number(parsed.searchParams.get("_at") || 0);
+    return Number.isFinite(at) && at > 0 ? at : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function syncMpegtsTimelineOffset(sourceUrl, sourceType) {
+  if (String(sourceType || "") !== "mpegts") {
+    state.mpegtsTimelineOffset = 0;
+    return;
+  }
+  state.mpegtsTimelineOffset = getMpegtsTimelineOffsetFromSource(sourceUrl);
+}
+
+function getPlaybackCurrentTime(video = state.dp?.video) {
+  const raw = Number(video?.currentTime || 0);
+  if (!Number.isFinite(raw) || raw < 0) return 0;
+  if (getSourceType(video) !== "mpegts") return raw;
+  const offset = Number(state.mpegtsTimelineOffset || 0);
+  if (!Number.isFinite(offset) || offset <= 0) return raw;
+  return Math.max(0, raw + offset);
+}
+
+function buildMpegtsSeekSource(targetTime, duration) {
+  const total = Number(state.media?.contentLength || 0);
+  const fileId = String(state.media?.fileId || "").trim();
+  if (!(duration > 0) || !(total > 0) || !fileId) return "";
+
+  const ratio = Math.max(0, Math.min(0.9995, Number(targetTime || 0) / duration));
+  const safeTail = Math.min(total, 188 * 8192);
+  const maxStart = Math.max(0, total - safeTail);
+
+  let start = Math.floor(total * ratio);
+  start = Math.max(0, Math.min(start, maxStart));
+  start = Math.floor(start / 188) * 188;
+
+  const baseUrl = getDirectBridgeUrl(fileId);
+  if (!baseUrl) return "";
+  try {
+    const parsed = new URL(baseUrl, location.origin);
+    parsed.searchParams.set("_start", String(start));
+    parsed.searchParams.set("_at", String(Math.max(0, Number(targetTime || 0))));
+    parsed.searchParams.set("_seek", String(Date.now()));
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return "";
+  }
+}
+
+function seekMpegtsBySourceReload(targetTime, keepPlaying, shouldEmit, reason = "seek") {
+  if (!state.dp) return false;
+  const duration = getPlayableDuration(state.dp.video);
+  const seekSource = buildMpegtsSeekSource(targetTime, duration);
+  if (!seekSource) return false;
+
+  state.mpegtsTimelineOffset = Math.max(0, Number(targetTime || 0));
+  if (!shouldEmit) {
+    state.blockLocalUntil = performance.now() + 2600;
+  }
+
+  withLocalBlock(() => {
+    destroyMpegtsPlayer();
+    state.dp.switchVideo({
+      url: seekSource,
+      type: "mpegts"
+    });
+    state.dp.video.dataset.sourceType = "mpegts";
+  });
+
+  state.playerReady = false;
+  updateTransportControls(Number(targetTime || 0));
+  if (keepPlaying) {
+    requestPlayWithFallback(false).catch(() => {});
+  } else {
+    state.dp.pause();
+  }
+  if (shouldEmit) {
+    emitSync(reason);
+  }
+  return true;
 }
 
 function findTsSyncOffset(bytes) {
@@ -475,7 +568,7 @@ function updateDPlayerTimeline(currentTime, duration) {
 function updateTransportControls(previewTime = null) {
   const video = state.dp?.video;
   const duration = getPlayableDuration(video);
-  const currentTime = Number(video?.currentTime || 0);
+  const currentTime = getPlaybackCurrentTime(video);
   const shownCurrent = previewTime == null ? currentTime : Number(previewTime || 0);
 
   const currentText = formatClock(shownCurrent);
@@ -506,9 +599,15 @@ function seekTo(targetTime, reason = "seek") {
 
   withLocalBlock(() => {
     const nativeDuration = Number(video.duration || 0);
-    const forceNativeSeek =
-      String(video.dataset?.sourceType || "") === "mpegts" || !(Number.isFinite(nativeDuration) && nativeDuration > 0);
+    const sourceType = getSourceType(video);
+    const forceNativeSeek = sourceType === "mpegts" || !(Number.isFinite(nativeDuration) && nativeDuration > 0);
     if (forceNativeSeek) {
+      if (sourceType === "mpegts") {
+        const keepPlaying = !video.paused;
+        if (seekMpegtsBySourceReload(nextTime, keepPlaying, true, reason)) {
+          return;
+        }
+      }
       seekMpegtsTarget(video, nextTime);
       return;
     }
@@ -523,7 +622,7 @@ function seekTo(targetTime, reason = "seek") {
 }
 
 function seekBy(deltaSeconds) {
-  const current = Number(state.dp?.video?.currentTime || 0);
+  const current = getPlaybackCurrentTime(state.dp?.video);
   seekTo(current + Number(deltaSeconds || 0), "seek");
 }
 
@@ -1110,6 +1209,7 @@ async function switchToCurrentSource(autoPlay = false) {
   }
   const sourceType = await resolveSourceType(source);
   const dp = ensurePlayer(source);
+  syncMpegtsTimelineOffset(source, sourceType);
   if (sourceType === "mpegts") {
     probeLockedDurationForMpegts();
   }
@@ -1209,6 +1309,7 @@ async function setMedia(media, broadcast) {
   state.media = media;
   state.lockedDuration = 0;
   state.durationProbeTask = null;
+  state.mpegtsTimelineOffset = 0;
   lockDuration(Number(media?.duration || 0), true);
   state.directRecoverAttempted = false;
   state.sourceRecovering = false;
@@ -1242,7 +1343,7 @@ function getPlaybackState() {
   }
   return {
     playing: !video.paused,
-    currentTime: Number(video.currentTime || 0),
+    currentTime: getPlaybackCurrentTime(video),
     playbackRate: Number(video.playbackRate || 1)
   };
 }
@@ -1308,7 +1409,7 @@ function applyRemoteSync(syncState, forceSeek = false) {
   const targetTime =
     Number(syncState.currentTime || 0) +
     (syncState.playing ? elapsed * Number(syncState.playbackRate || 1) : 0);
-  const drift = Math.abs(Number(video.currentTime || 0) - targetTime);
+  const drift = Math.abs(getPlaybackCurrentTime(video) - targetTime);
   const nowTick = performance.now();
   const throttleBlockedSeek =
     syncState.playing &&
@@ -1328,10 +1429,16 @@ function applyRemoteSync(syncState, forceSeek = false) {
       try {
         const seekTarget = Math.max(0, targetTime);
         const nativeDuration = Number(video.duration || 0);
-        const forceNativeSeek =
-          String(video.dataset?.sourceType || "") === "mpegts" || !(Number.isFinite(nativeDuration) && nativeDuration > 0);
+        const sourceType = getSourceType(video);
+        const forceNativeSeek = sourceType === "mpegts" || !(Number.isFinite(nativeDuration) && nativeDuration > 0);
         if (forceNativeSeek) {
-          seekMpegtsTarget(video, seekTarget);
+          if (sourceType === "mpegts") {
+            if (!seekMpegtsBySourceReload(seekTarget, Boolean(syncState.playing), false, "seek")) {
+              seekMpegtsTarget(video, seekTarget);
+            }
+          } else {
+            seekMpegtsTarget(video, seekTarget);
+          }
         } else {
           state.dp.seek(seekTarget);
         }
@@ -1519,7 +1626,7 @@ function sendChat() {
   }
   const text = refs.chatInput.value.trim();
   if (!text) return;
-  const videoTime = Number(state.dp?.video?.currentTime || 0);
+  const videoTime = getPlaybackCurrentTime(state.dp?.video);
   state.socket.emit("chat:send", { text, color: refs.danmakuColorInput.value, videoTime }, (ack) => {
     if (!ack || !ack.ok) {
       setHint(`消息发送失败：${ack?.message || "未知错误"}`);
@@ -1539,7 +1646,7 @@ function sendDanmaku(fromFullscreen = false) {
   if (!input) return;
   const text = input.value.trim();
   if (!text) return;
-  const videoTime = Number(state.dp?.video?.currentTime || 0);
+  const videoTime = getPlaybackCurrentTime(state.dp?.video);
   state.socket.emit(
     "danmaku:send",
     {
