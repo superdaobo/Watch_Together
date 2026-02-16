@@ -276,7 +276,8 @@ app.get("/api/cx/link", async (req, res) => {
       directUrl: link.directUrl || "",
       previewUrl: link.previewUrl || "",
       downloadUrl: link.downloadUrl || "",
-      candidateUrls: link.candidateUrls || []
+      candidateUrls: link.candidateUrls || [],
+      contentLength: Number(link.contentLength || 0)
     });
   } catch (error) {
     res.status(500).json({
