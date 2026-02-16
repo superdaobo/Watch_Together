@@ -33,6 +33,8 @@ const state = {
   fullscreenBarTimer: null,
   playerFullscreen: false,
   isMobile: false,
+  isIOS: false,
+  iosInlineFullscreen: false,
   serviceWorkerReady: false,
   fullscreenDanmakuPlugin: null,
   directRecoverAttempted: false,
@@ -101,6 +103,15 @@ function isController() {
 function isMobileClient() {
   const ua = navigator.userAgent || "";
   return /Android|iPhone|iPad|iPod|Mobile|HarmonyOS|MiuiBrowser/i.test(ua) || navigator.maxTouchPoints > 1;
+}
+
+function isIOSClient() {
+  const ua = navigator.userAgent || "";
+  const platform = navigator.platform || "";
+  if (/iPhone|iPad|iPod/i.test(ua)) return true;
+  if (/iPhone|iPad|iPod/i.test(platform)) return true;
+  // iPadOS 13+ may report itself as Macintosh with touch points
+  return /Macintosh/i.test(ua) && navigator.maxTouchPoints > 1;
 }
 
 function getQueryParam(name) {
@@ -865,6 +876,43 @@ function ensureFullscreenDanmakuPlugin() {
   return state.fullscreenDanmakuPlugin;
 }
 
+function bindIOSFullscreenGuards(video) {
+  if (!state.isIOS || !state.dp?.container || !video) return;
+  const container = state.dp.container;
+  if (container.dataset.iosFullscreenGuardBound === "1") return;
+
+  const interceptClick = (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const hit = target.closest(".dplayer-full-icon, .dplayer-full-in-icon, .dplayer-full");
+    if (!hit) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    if (isFullscreenMode()) {
+      cancelIOSInlineFullscreen();
+      return;
+    }
+    requestIOSInlineFullscreen();
+  };
+
+  const handleNativeFullscreenBegin = () => {
+    try {
+      if (typeof video.webkitExitFullscreen === "function") {
+        video.webkitExitFullscreen();
+      }
+    } catch {
+      // ignore
+    }
+    requestIOSInlineFullscreen();
+  };
+
+  container.addEventListener("click", interceptClick, true);
+  container.addEventListener("pointerup", interceptClick, true);
+  video.addEventListener("webkitbeginfullscreen", handleNativeFullscreenBegin);
+  container.dataset.iosFullscreenGuardBound = "1";
+}
+
 function updateFullscreenDanmakuIdentity() {
   const plugin = getFullscreenDanmakuPlugin();
   if (!plugin?.identity) return;
@@ -1070,8 +1118,17 @@ function ensurePlayer(sourceUrl = "") {
 
   const video = state.dp.video;
   video.setAttribute("playsinline", "");
+  video.setAttribute("playsinline", "true");
   video.setAttribute("webkit-playsinline", "true");
   video.setAttribute("x5-playsinline", "true");
+  if (state.isIOS) {
+    video.setAttribute("x-webkit-airplay", "allow");
+    try {
+      video.disableRemotePlayback = true;
+    } catch {
+      // ignore
+    }
+  }
 
   const fullscreenPlugin = ensureFullscreenDanmakuPlugin();
   updateFullscreenDanmakuIdentity();
@@ -1140,6 +1197,7 @@ function ensurePlayer(sourceUrl = "") {
   state.dp.on("fullscreen_cancel", () => handlePlayerFullscreen(false));
   state.dp.on("webfullscreen", () => handlePlayerFullscreen(true));
   state.dp.on("webfullscreen_cancel", () => handlePlayerFullscreen(false));
+  bindIOSFullscreenGuards(video);
   bindDPlayerTimelineFallback();
   updateTransportControls();
 
@@ -1469,6 +1527,28 @@ function clearFullscreenBarTimer() {
   state.fullscreenBarTimer = null;
 }
 
+function setIOSInlineFullscreen(opened) {
+  state.iosInlineFullscreen = Boolean(opened);
+  const active = state.iosInlineFullscreen;
+  document.documentElement.classList.toggle("ios-inline-fullscreen", active);
+  document.body.classList.toggle("ios-inline-fullscreen", active);
+  refs.roomApp?.classList?.toggle("ios-inline-fullscreen", active);
+}
+
+function requestIOSInlineFullscreen() {
+  if (!state.isIOS) return false;
+  setIOSInlineFullscreen(true);
+  handlePlayerFullscreen(true);
+  return true;
+}
+
+function cancelIOSInlineFullscreen() {
+  if (!state.isIOS) return false;
+  handlePlayerFullscreen(false);
+  setIOSInlineFullscreen(false);
+  return true;
+}
+
 function isFullscreenMode() {
   return state.playerFullscreen;
 }
@@ -1530,6 +1610,10 @@ function handlePlayerFullscreen(opened) {
 }
 
 function requestPlayerFullscreen() {
+  if (state.isIOS) {
+    requestIOSInlineFullscreen();
+    return;
+  }
   if (!state.dp?.fullScreen) return;
   try {
     state.dp.fullScreen.request("browser");
@@ -1545,6 +1629,10 @@ function requestPlayerFullscreen() {
 }
 
 function cancelPlayerFullscreen() {
+  if (state.isIOS) {
+    cancelIOSInlineFullscreen();
+    return;
+  }
   if (!state.dp?.fullScreen) return;
   try {
     state.dp.fullScreen.cancel("browser");
@@ -1681,9 +1769,15 @@ function joinCurrentRoom() {
 
 function bindActions() {
   refs.backLobbyBtn.addEventListener("click", () => {
+    if (state.iosInlineFullscreen) {
+      cancelIOSInlineFullscreen();
+    }
     location.href = "/";
   });
   refs.leaveBtn.addEventListener("click", () => {
+    if (state.iosInlineFullscreen) {
+      cancelIOSInlineFullscreen();
+    }
     if (state.socket) state.socket.emit("room:leave");
     location.href = "/";
   });
@@ -1905,6 +1999,7 @@ async function bootstrap() {
   if (!accessOk) return;
 
   state.isMobile = isMobileClient();
+  state.isIOS = isIOSClient();
   state.roomId = String(getQueryParam("room") || localStorage.getItem("vo_room_id") || "").trim();
   state.nickname = String(getQueryParam("nick") || localStorage.getItem("vo_nickname") || "").trim();
   if (!state.roomId) {

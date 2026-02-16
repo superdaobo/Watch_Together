@@ -297,6 +297,68 @@ input[type="color"] {
   background: #02060b;
 }
 
+html.ios-inline-fullscreen,
+body.ios-inline-fullscreen {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+
+body.ios-inline-fullscreen .app-shell {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+body.ios-inline-fullscreen .topbar,
+body.ios-inline-fullscreen .file-panel,
+body.ios-inline-fullscreen .chat-panel,
+body.ios-inline-fullscreen .transport-controls,
+body.ios-inline-fullscreen .player-actions {
+  display: none !important;
+}
+
+body.ios-inline-fullscreen .layout {
+  display: block;
+}
+
+body.ios-inline-fullscreen .player-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: #000;
+}
+
+body.ios-inline-fullscreen #videoStage {
+  position: absolute;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  aspect-ratio: auto;
+  border-radius: 0;
+}
+
+body.ios-inline-fullscreen #dplayerContainer,
+body.ios-inline-fullscreen #dplayerContainer .dplayer {
+  width: 100%;
+  height: 100%;
+}
+
+body.ios-inline-fullscreen .dplayer-danmaku-plugin-bar {
+  width: min(960px, calc(100% - 16px));
+  bottom: max(14px, calc(env(safe-area-inset-bottom) + 8px));
+  z-index: 650;
+}
+
+body.ios-inline-fullscreen .dplayer-full-icon,
+body.ios-inline-fullscreen .dplayer-full-in-icon {
+  display: none !important;
+}
+
 .dplayer-container,
 .dplayer-container .dplayer {
   width: 100%;
