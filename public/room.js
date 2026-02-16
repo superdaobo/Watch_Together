@@ -38,8 +38,13 @@ const state = {
   directRecoverAttempted: false,
   sourceRecovering: false,
   playMode: "signed-header",
-  transportDragging: false
+  transportDragging: false,
+  lockedDuration: 0,
+  durationProbeTask: null
 };
+if (typeof window !== "undefined") {
+  window.__vo_state = state;
+}
 
 const refs = {
   roomApp: document.getElementById("roomApp"),
@@ -59,9 +64,8 @@ const refs = {
   danmakuLayer: document.getElementById("danmakuLayer"),
   playerOverlayHint: document.getElementById("playerOverlayHint"),
   seekBackBtn: document.getElementById("seekBackBtn"),
-  timeCurrentLabel: document.getElementById("timeCurrentLabel"),
+  timeLabel: document.getElementById("timeLabel"),
   seekRange: document.getElementById("seekRange"),
-  timeDurationLabel: document.getElementById("timeDurationLabel"),
   seekForwardBtn: document.getElementById("seekForwardBtn"),
   sendDanmakuBtn: document.getElementById("sendDanmakuBtn"),
   danmakuColorInput: document.getElementById("danmakuColorInput"),
@@ -140,20 +144,311 @@ function formatClock(seconds = 0) {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function getPlayableDuration(video = state.dp?.video) {
-  if (!video) return 0;
-  const mediaDuration = Number(state.media?.duration || 0);
-  const nativeDuration = Number(video.duration || 0);
-  if (Number.isFinite(nativeDuration) && nativeDuration > 0) {
-    return Math.max(nativeDuration, mediaDuration);
+function lockDuration(seconds, force = false) {
+  const value = Number(seconds || 0);
+  if (!Number.isFinite(value) || value <= 0) return false;
+  if (!force && Number(state.lockedDuration || 0) > 0) return false;
+  state.lockedDuration = value;
+  if (state.media) {
+    state.media = {
+      ...state.media,
+      duration: value
+    };
   }
-  const seekable = video.seekable;
-  if (seekable && seekable.length > 0) {
-    const seekEnd = Number(seekable.end(seekable.length - 1) || 0);
-    if (Number.isFinite(seekEnd) && seekEnd > 0) {
-      return Math.max(seekEnd, mediaDuration);
+  return true;
+}
+
+function getDirectBridgeUrl(fileId) {
+  const key = String(fileId || "").trim();
+  if (!key) return "";
+  return `/s3-direct/${encodeURIComponent(key)}`;
+}
+
+function findTsSyncOffset(bytes) {
+  const size = Number(bytes?.length || 0);
+  if (size < 188) return -1;
+  for (let offset = 0; offset < 188 && offset < size; offset += 1) {
+    if (bytes[offset] !== 0x47) continue;
+    const p2 = offset + 188;
+    const p3 = offset + 376;
+    if (p2 < size && bytes[p2] !== 0x47) continue;
+    if (p3 < size && bytes[p3] !== 0x47) continue;
+    return offset;
+  }
+  return -1;
+}
+
+function collectTsPcrSamples(bytes) {
+  const syncOffset = findTsSyncOffset(bytes);
+  if (syncOffset < 0) return [];
+  const list = [];
+  for (let pos = syncOffset; pos + 188 <= bytes.length; pos += 188) {
+    if (bytes[pos] !== 0x47) continue;
+    const pid = ((bytes[pos + 1] & 0x1f) << 8) | bytes[pos + 2];
+    const afc = (bytes[pos + 3] >> 4) & 0x03;
+    if (afc !== 2 && afc !== 3) continue;
+    const adaptationLength = bytes[pos + 4];
+    if (adaptationLength < 7) continue;
+    if (pos + 5 + adaptationLength > pos + 187) continue;
+    const flags = bytes[pos + 5];
+    if ((flags & 0x10) === 0) continue;
+
+    const b0 = bytes[pos + 6];
+    const b1 = bytes[pos + 7];
+    const b2 = bytes[pos + 8];
+    const b3 = bytes[pos + 9];
+    const b4 = bytes[pos + 10];
+    const base =
+      (BigInt(b0) << 25n) |
+      (BigInt(b1) << 17n) |
+      (BigInt(b2) << 9n) |
+      (BigInt(b3) << 1n) |
+      (BigInt(b4 >> 7) & 0x01n);
+    list.push({ pid, base });
+  }
+  return list;
+}
+
+function collectTsPtsSamples(bytes) {
+  const syncOffset = findTsSyncOffset(bytes);
+  if (syncOffset < 0) return [];
+  const list = [];
+  for (let pos = syncOffset; pos + 188 <= bytes.length; pos += 188) {
+    if (bytes[pos] !== 0x47) continue;
+    const pusi = (bytes[pos + 1] & 0x40) !== 0;
+    if (!pusi) continue;
+    const pid = ((bytes[pos + 1] & 0x1f) << 8) | bytes[pos + 2];
+    const afc = (bytes[pos + 3] >> 4) & 0x03;
+    if (afc === 0 || afc === 2) continue;
+
+    let payloadStart = pos + 4;
+    if (afc === 3) {
+      const adaptationLength = bytes[pos + 4];
+      payloadStart = pos + 5 + adaptationLength;
+    }
+    if (payloadStart + 14 > pos + 188) continue;
+    if (bytes[payloadStart] !== 0x00 || bytes[payloadStart + 1] !== 0x00 || bytes[payloadStart + 2] !== 0x01) {
+      continue;
+    }
+
+    const ptsDtsFlags = bytes[payloadStart + 7] & 0xc0;
+    if ((ptsDtsFlags & 0x80) === 0) continue;
+    const ptsStart = payloadStart + 9;
+    if (ptsStart + 5 > pos + 188) continue;
+    const b0 = bytes[ptsStart];
+    const b1 = bytes[ptsStart + 1];
+    const b2 = bytes[ptsStart + 2];
+    const b3 = bytes[ptsStart + 3];
+    const b4 = bytes[ptsStart + 4];
+    const pts =
+      (BigInt((b0 & 0x0e) >> 1) << 30n) |
+      (BigInt(b1) << 22n) |
+      (BigInt((b2 & 0xfe) >> 1) << 15n) |
+      (BigInt(b3) << 7n) |
+      BigInt((b4 & 0xfe) >> 1);
+    list.push({ pid, pts });
+  }
+  return list;
+}
+
+async function fetchRangeBuffer(url, start, end) {
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      Range: `bytes=${start}-${end}`
+    },
+    mode: "cors",
+    credentials: "omit",
+    cache: "no-store"
+  });
+  if (!(response.ok || response.status === 206)) {
+    throw new Error(`range request failed: ${response.status}`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+async function estimateTsDurationByPcr(url, contentLength) {
+  const total = Number(contentLength || 0);
+  if (!(total > 188 * 4)) {
+    return 0;
+  }
+  const windowSize = Math.min(2 * 1024 * 1024, total);
+  const headEnd = Math.min(total - 1, windowSize - 1);
+  const tailStart = Math.max(0, total - windowSize);
+
+  const [headBytes, tailBytes] = await Promise.all([
+    fetchRangeBuffer(url, 0, headEnd),
+    fetchRangeBuffer(url, tailStart, total - 1)
+  ]);
+  const headPcr = collectTsPcrSamples(headBytes);
+  const tailPcr = collectTsPcrSamples(tailBytes);
+  if (!headPcr.length || !tailPcr.length) {
+    return 0;
+  }
+
+  const headPidCount = new Map();
+  const tailPidCount = new Map();
+  for (const sample of headPcr) {
+    headPidCount.set(sample.pid, (headPidCount.get(sample.pid) || 0) + 1);
+  }
+  for (const sample of tailPcr) {
+    tailPidCount.set(sample.pid, (tailPidCount.get(sample.pid) || 0) + 1);
+  }
+
+  let selectedPid = -1;
+  let selectedScore = -1;
+  for (const [pid, headCount] of headPidCount.entries()) {
+    const tailCount = tailPidCount.get(pid) || 0;
+    if (tailCount <= 0) continue;
+    const score = headCount + tailCount;
+    if (score > selectedScore) {
+      selectedScore = score;
+      selectedPid = pid;
     }
   }
+
+  let first = null;
+  let last = null;
+  if (selectedPid >= 0) {
+    for (const sample of headPcr) {
+      if (sample.pid === selectedPid) {
+        first = sample.base;
+        break;
+      }
+    }
+    for (let i = tailPcr.length - 1; i >= 0; i -= 1) {
+      const sample = tailPcr[i];
+      if (sample.pid === selectedPid) {
+        last = sample.base;
+        break;
+      }
+    }
+  }
+  if (first == null || last == null) {
+    first = headPcr[0].base;
+    last = tailPcr[tailPcr.length - 1].base;
+  }
+
+  const pcrMod = 1n << 33n;
+  let diff = last - first;
+  if (diff < 0n) {
+    diff += pcrMod;
+  }
+  if (diff <= 0n) return 0;
+  const duration = Number(diff) / 90000;
+  if (!Number.isFinite(duration) || duration <= 0) return 0;
+  return duration;
+}
+
+async function estimateTsDurationByPts(url, contentLength) {
+  const total = Number(contentLength || 0);
+  if (!(total > 188 * 8)) {
+    return 0;
+  }
+  const windowSize = Math.min(3 * 1024 * 1024, total);
+  const headEnd = Math.min(total - 1, windowSize - 1);
+  const tailStart = Math.max(0, total - windowSize);
+
+  const [headBytes, tailBytes] = await Promise.all([
+    fetchRangeBuffer(url, 0, headEnd),
+    fetchRangeBuffer(url, tailStart, total - 1)
+  ]);
+  const headPts = collectTsPtsSamples(headBytes);
+  const tailPts = collectTsPtsSamples(tailBytes);
+  if (!headPts.length || !tailPts.length) return 0;
+
+  const headPidCount = new Map();
+  const tailPidCount = new Map();
+  for (const sample of headPts) {
+    headPidCount.set(sample.pid, (headPidCount.get(sample.pid) || 0) + 1);
+  }
+  for (const sample of tailPts) {
+    tailPidCount.set(sample.pid, (tailPidCount.get(sample.pid) || 0) + 1);
+  }
+
+  let selectedPid = -1;
+  let selectedScore = -1;
+  for (const [pid, headCount] of headPidCount.entries()) {
+    const tailCount = tailPidCount.get(pid) || 0;
+    if (tailCount <= 0) continue;
+    const score = headCount + tailCount;
+    if (score > selectedScore) {
+      selectedScore = score;
+      selectedPid = pid;
+    }
+  }
+  if (selectedPid < 0) return 0;
+
+  let first = null;
+  let last = null;
+  for (const sample of headPts) {
+    if (sample.pid === selectedPid) {
+      first = sample.pts;
+      break;
+    }
+  }
+  for (let i = tailPts.length - 1; i >= 0; i -= 1) {
+    const sample = tailPts[i];
+    if (sample.pid === selectedPid) {
+      last = sample.pts;
+      break;
+    }
+  }
+  if (first == null || last == null) return 0;
+
+  const mod = 1n << 33n;
+  let diff = last - first;
+  if (diff < 0n) diff += mod;
+  if (diff <= 0n) return 0;
+  const duration = Number(diff) / 90000;
+  if (!Number.isFinite(duration) || duration <= 0) return 0;
+  return duration;
+}
+
+function probeLockedDurationForMpegts() {
+  if (Number(state.lockedDuration || 0) > 0) return;
+  if (state.durationProbeTask) return;
+  const fileId = String(state.media?.fileId || "").trim();
+  const contentLength = Number(state.media?.contentLength || 0);
+  if (!fileId || !(contentLength > 0)) return;
+  const directUrl = getDirectBridgeUrl(fileId);
+  if (!directUrl) return;
+
+  state.durationProbeTask = (async () => {
+    try {
+      if (!state.serviceWorkerReady) {
+        await ensureDirectS3Bridge();
+      }
+      let estimated = await estimateTsDurationByPts(directUrl, contentLength);
+      if (!(estimated > 0)) {
+        estimated = await estimateTsDurationByPcr(directUrl, contentLength);
+      }
+      if (estimated > 0 && lockDuration(estimated, false)) {
+        updateTransportControls();
+      }
+    } catch {
+      // ignore duration probe failure
+    } finally {
+      state.durationProbeTask = null;
+    }
+  })();
+}
+
+function getPlayableDuration(video = state.dp?.video) {
+  const locked = Number(state.lockedDuration || 0);
+  if (Number.isFinite(locked) && locked > 0) {
+    return locked;
+  }
+  if (!video) {
+    const mediaDuration = Number(state.media?.duration || 0);
+    return Number.isFinite(mediaDuration) && mediaDuration > 0 ? mediaDuration : 0;
+  }
+  const nativeDuration = Number(video.duration || 0);
+  if (Number.isFinite(nativeDuration) && nativeDuration > 0) {
+    return nativeDuration;
+  }
+  const mediaDuration = Number(state.media?.duration || 0);
+  if (Number.isFinite(mediaDuration) && mediaDuration > 0) return mediaDuration;
   return mediaDuration;
 }
 
@@ -161,8 +456,12 @@ function updateDPlayerTimeline(currentTime, duration) {
   const container = state.dp?.container;
   if (!container) return;
   const ptime = container.querySelector(".dplayer-ptime");
+  const dtime = container.querySelector(".dplayer-dtime");
   if (ptime) {
-    ptime.textContent = `${formatClock(currentTime)} / ${duration > 0 ? formatClock(duration) : "--:--"}`;
+    ptime.textContent = formatClock(currentTime);
+  }
+  if (dtime) {
+    dtime.textContent = duration > 0 ? formatClock(duration) : "--:--";
   }
   if (duration > 0) {
     const percent = Math.max(0, Math.min(100, (currentTime / duration) * 100));
@@ -179,8 +478,9 @@ function updateTransportControls(previewTime = null) {
   const currentTime = Number(video?.currentTime || 0);
   const shownCurrent = previewTime == null ? currentTime : Number(previewTime || 0);
 
-  refs.timeCurrentLabel.textContent = formatClock(shownCurrent);
-  refs.timeDurationLabel.textContent = duration > 0 ? formatClock(duration) : "--:--";
+  const currentText = formatClock(shownCurrent);
+  const durationText = duration > 0 ? formatClock(duration) : "--:--";
+  refs.timeLabel.textContent = `${currentText} / ${durationText}`;
   if (!state.transportDragging) {
     if (duration > 0) {
       const ratio = Math.max(0, Math.min(1, currentTime / duration));
@@ -209,13 +509,13 @@ function seekTo(targetTime, reason = "seek") {
     const forceNativeSeek =
       String(video.dataset?.sourceType || "") === "mpegts" || !(Number.isFinite(nativeDuration) && nativeDuration > 0);
     if (forceNativeSeek) {
-      video.currentTime = nextTime;
+      seekMpegtsTarget(video, nextTime);
       return;
     }
     try {
       state.dp.seek(nextTime);
     } catch {
-      video.currentTime = nextTime;
+      seekMpegtsTarget(video, nextTime);
     }
   });
   updateTransportControls();
@@ -225,6 +525,18 @@ function seekTo(targetTime, reason = "seek") {
 function seekBy(deltaSeconds) {
   const current = Number(state.dp?.video?.currentTime || 0);
   seekTo(current + Number(deltaSeconds || 0), "seek");
+}
+
+function seekMpegtsTarget(video, targetTime) {
+  if (state.mpegtsPlayer) {
+    try {
+      state.mpegtsPlayer.currentTime = targetTime;
+      return;
+    } catch {
+      // ignore and fallback
+    }
+  }
+  video.currentTime = targetTime;
 }
 
 function bindDPlayerTimelineFallback() {
@@ -620,11 +932,9 @@ function ensurePlayer(sourceUrl = "") {
         const rawDuration = Number(mediaInfo?.duration || 0);
         if (Number.isFinite(rawDuration) && rawDuration > 0) {
           const durationSeconds = rawDuration > 1000 ? rawDuration / 1000 : rawDuration;
-          state.media = {
-            ...(state.media || {}),
-            duration: Math.max(Number(state.media?.duration || 0), durationSeconds)
-          };
-          updateTransportControls();
+          if (lockDuration(durationSeconds, false)) {
+            updateTransportControls();
+          }
         }
       });
       player.on(window.mpegts.Events.ERROR, (type, detail) => {
@@ -795,6 +1105,9 @@ async function switchToCurrentSource(autoPlay = false) {
   }
   const sourceType = await resolveSourceType(source);
   const dp = ensurePlayer(source);
+  if (sourceType === "mpegts") {
+    probeLockedDurationForMpegts();
+  }
   const currentType = String(dp.video?.dataset?.sourceType || "");
   if (dp.video?.src !== source || currentType !== sourceType) {
     destroyMpegtsPlayer();
@@ -881,6 +1194,7 @@ async function resolveMediaByFileId(fileId, fileName = "", fromMedia = null) {
     fileId,
     name: fileName || fromMedia?.name || "未命名视频",
     duration: Number(result.duration || fromMedia?.duration || 0),
+    contentLength: Number(result.contentLength || fromMedia?.contentLength || 0),
     candidateUrls: list,
     url: playUrl || list[0] || ""
   };
@@ -888,6 +1202,9 @@ async function resolveMediaByFileId(fileId, fileName = "", fromMedia = null) {
 
 async function setMedia(media, broadcast) {
   state.media = media;
+  state.lockedDuration = 0;
+  state.durationProbeTask = null;
+  lockDuration(Number(media?.duration || 0), true);
   state.directRecoverAttempted = false;
   state.sourceRecovering = false;
   clearDanmakuLayer();
@@ -1009,7 +1326,7 @@ function applyRemoteSync(syncState, forceSeek = false) {
         const forceNativeSeek =
           String(video.dataset?.sourceType || "") === "mpegts" || !(Number.isFinite(nativeDuration) && nativeDuration > 0);
         if (forceNativeSeek) {
-          video.currentTime = seekTarget;
+          seekMpegtsTarget(video, seekTarget);
         } else {
           state.dp.seek(seekTarget);
         }
@@ -1298,13 +1615,13 @@ function bindActions() {
   refs.seekRange.addEventListener("input", () => {
     const duration = getPlayableDuration(state.dp?.video);
     if (!(duration > 0)) {
-      refs.timeCurrentLabel.textContent = "00:00";
+      refs.timeLabel.textContent = "00:00 / --:--";
       return;
     }
     state.transportDragging = true;
     const ratio = Number(refs.seekRange.value || 0) / 1000;
     const preview = Math.max(0, Math.min(duration, ratio * duration));
-    refs.timeCurrentLabel.textContent = formatClock(preview);
+    refs.timeLabel.textContent = `${formatClock(preview)} / ${formatClock(duration)}`;
   });
   refs.seekRange.addEventListener("change", () => {
     const duration = getPlayableDuration(state.dp?.video);

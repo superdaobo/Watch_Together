@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>超星同步放映厅 · 房间</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20260216v13" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/dplayer/dist/DPlayer.min.css" />
   </head>
   <body>
@@ -48,9 +48,8 @@
 
           <div class="transport-controls">
             <button id="seekBackBtn" class="btn ghost small">-10s</button>
-            <span id="timeCurrentLabel" class="time-label">00:00</span>
             <input id="seekRange" type="range" min="0" max="1000" step="1" value="0" />
-            <span id="timeDurationLabel" class="time-label">--:--</span>
+            <span id="timeLabel" class="time-label">00:00 / --:--</span>
             <button id="seekForwardBtn" class="btn ghost small">+10s</button>
           </div>
 
@@ -82,6 +81,6 @@
     <script src="/socket.io/socket.io.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dplayer/dist/DPlayer.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.8.0/dist/mpegts.min.js"></script>
-    <script src="/room.js?v=20260216v8"></script>
+    <script src="/room.js?v=20260216v13"></script>
   </body>
 </html>

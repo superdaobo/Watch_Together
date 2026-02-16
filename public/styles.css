@@ -337,7 +337,7 @@ input[type="color"] {
 
 .transport-controls {
   display: grid;
-  grid-template-columns: auto auto minmax(180px, 1fr) auto auto;
+  grid-template-columns: auto minmax(180px, 1fr) auto auto;
   gap: 8px;
   align-items: center;
 }
@@ -349,7 +349,7 @@ input[type="color"] {
 .transport-controls .time-label {
   color: var(--muted);
   font-size: 12px;
-  min-width: 50px;
+  min-width: 108px;
   text-align: center;
 }
 
