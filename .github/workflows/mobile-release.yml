@@ -63,12 +63,30 @@ jobs:
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Build Android APK (debug)
+        id: android_build
         shell: pwsh
+        continue-on-error: true
         run: |
           Set-Location android
-          .\gradlew.bat assembleDebug
+          .\gradlew.bat assembleDebug --stacktrace --warning-mode all *>&1 | Tee-Object -FilePath ..\android-build.log
+          exit $LASTEXITCODE
+
+      - name: Upload Android build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: watch-together-android-build-log
+          path: android-build.log
+          if-no-files-found: warn
+
+      - name: Fail when Android build fails
+        if: steps.android_build.outcome != 'success'
+        shell: pwsh
+        run: |
+          throw "Android build failed. Check artifact watch-together-android-build-log."
 
       - name: Upload Android artifact
+        if: steps.android_build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: watch-together-android-apk
