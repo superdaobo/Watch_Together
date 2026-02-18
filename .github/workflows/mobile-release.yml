@@ -83,7 +83,12 @@ jobs:
         if: steps.android_build.outcome != 'success'
         shell: pwsh
         run: |
-          throw "Android build failed. Check artifact watch-together-android-build-log."
+          $tail = ""
+          if (Test-Path android-build.log) {
+            $tail = (Get-Content android-build.log -Tail 140) -join "`n"
+            Write-Output $tail
+          }
+          throw "Android build failed. Recent log tail:`n$tail"
 
       - name: Upload Android artifact
         if: steps.android_build.outcome == 'success'
