@@ -83,12 +83,20 @@ jobs:
         if: steps.android_build.outcome != 'success'
         shell: pwsh
         run: |
-          $tail = ""
+          $excerpt = ""
           if (Test-Path android-build.log) {
-            $tail = (Get-Content android-build.log -Tail 140) -join "`n"
-            Write-Output $tail
+            $full = Get-Content android-build.log -Raw
+            $marker = "* What went wrong:"
+            $start = $full.IndexOf($marker)
+            if ($start -ge 0) {
+              $maxLen = [Math]::Min(3500, $full.Length - $start)
+              $excerpt = $full.Substring($start, $maxLen)
+            } else {
+              $excerpt = (Get-Content android-build.log -Tail 220) -join "`n"
+            }
+            Write-Output $excerpt
           }
-          $escaped = $tail.Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
+          $escaped = $excerpt.Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
           Write-Output "::error title=Android build tail::$escaped"
           throw "Android build failed."
 
