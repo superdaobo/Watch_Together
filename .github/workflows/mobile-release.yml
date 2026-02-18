@@ -45,8 +45,8 @@ jobs:
         run: |
           echo "sdk.dir=${ANDROID_SDK_ROOT}" > android/local.properties
 
-      - name: Sync Android
-        run: npx cap sync android
+      - name: Copy web assets to Android
+        run: npx cap copy android
 
       - name: Build Android APK (debug)
         run: |
@@ -84,8 +84,8 @@ jobs:
           node -e "const fs=require('fs');const p='capacitor.config.json';const cfg=JSON.parse(fs.readFileSync(p,'utf8'));const url=String(process.env.MOBILE_WEB_URL||cfg.server?.url||'https://mini-hbut-video-online.hf.space').trim();cfg.server=cfg.server||{};cfg.server.url=url;cfg.server.cleartext=url.startsWith('http://');fs.writeFileSync(p,JSON.stringify(cfg,null,2));"
           cat capacitor.config.json
 
-      - name: Sync iOS
-        run: npx cap sync ios
+      - name: Copy web assets to iOS
+        run: npx cap copy ios
 
       - name: Install CocoaPods
         run: |
