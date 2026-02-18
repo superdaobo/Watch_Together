@@ -88,7 +88,9 @@ jobs:
             $tail = (Get-Content android-build.log -Tail 140) -join "`n"
             Write-Output $tail
           }
-          throw "Android build failed. Recent log tail:`n$tail"
+          $escaped = $tail.Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
+          Write-Output "::error title=Android build tail::$escaped"
+          throw "Android build failed."
 
       - name: Upload Android artifact
         if: steps.android_build.outcome == 'success'
