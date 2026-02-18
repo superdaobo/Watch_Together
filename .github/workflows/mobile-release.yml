@@ -11,12 +11,11 @@ permissions:
 
 jobs:
   build-android:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     permissions:
       contents: read
     env:
       MOBILE_WEB_URL: ${{ vars.MOBILE_WEB_URL }}
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,23 +39,34 @@ jobs:
         run: npm ci
 
       - name: Inject mobile web URL
+        shell: pwsh
         run: |
           node -e "const fs=require('fs');const p='android/app/src/main/assets/capacitor.config.json';const cfg=JSON.parse(fs.readFileSync(p,'utf8'));const url=String(process.env.MOBILE_WEB_URL||cfg.server?.url||'https://mini-hbut-video-online.hf.space').trim();cfg.server=cfg.server||{};cfg.server.url=url;cfg.server.cleartext=url.startsWith('http://');fs.writeFileSync(p,JSON.stringify(cfg,null,2));"
-          cat android/app/src/main/assets/capacitor.config.json
+          Get-Content android/app/src/main/assets/capacitor.config.json
 
       - name: Configure Android SDK path
+        shell: pwsh
         run: |
-          echo "sdk.dir=${ANDROID_SDK_ROOT}" > android/local.properties
+          $sdk = $env:ANDROID_SDK_ROOT
+          if (-not $sdk) {
+            $sdk = $env:ANDROID_HOME
+          }
+          if (-not $sdk) {
+            throw "ANDROID_SDK_ROOT and ANDROID_HOME are empty"
+          }
+          $escaped = $sdk -replace '\\', '\\\\'
+          "sdk.dir=$escaped" | Out-File -FilePath android/local.properties -Encoding ascii -Force
 
       - name: Install Android build components
+        shell: pwsh
         run: |
-          yes | sdkmanager --licenses >/dev/null
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Build Android APK (debug)
+        shell: pwsh
         run: |
-          cd android
-          ./gradlew assembleDebug
+          Set-Location android
+          .\gradlew.bat assembleDebug
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
