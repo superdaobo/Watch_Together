@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>超星同步放映厅 · 房间</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css?v=20260219v1" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/dplayer/dist/DPlayer.min.css" />
+  </head>
+  <body class="page-room">
+    <div id="roomApp" class="app-shell hidden">
+      <header class="topbar topbar-room">
+        <div class="brand">
+          <span class="brand-badge">ROOM</span>
+          <div>
+            <h1 id="roomTitle">房间</h1>
+            <p id="roomSubtitle">正在连接...</p>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <div class="action-line">
+            <button id="backLobbyBtn" class="btn ghost">返回大厅</button>
+            <button id="claimBtn" class="btn ghost">抢主控</button>
+            <button id="leaveBtn" class="btn ghost danger">离开房间</button>
+          </div>
+          <div class="status-line">
+            <span id="connectState" class="pill">未连接</span>
+            <span id="controllerState" class="pill">主控：--</span>
+          </div>
+        </div>
+      </header>
+
+      <nav class="mobile-tabbar" aria-label="房间导航">
+        <button type="button" class="mobile-tab active" data-mobile-tab-btn="player">播放</button>
+        <button type="button" class="mobile-tab" data-mobile-tab-btn="media">片库</button>
+        <button type="button" class="mobile-tab" data-mobile-tab-btn="chat">聊天</button>
+      </nav>
+
+      <main class="layout">
+        <aside class="panel file-panel" data-mobile-panel="media">
+          <div class="panel-title-row">
+            <h2>S3 视频库</h2>
+            <button id="refreshFolderBtn" class="btn ghost small">刷新</button>
+          </div>
+          <div class="crumb-row">
+            <button id="backFolderBtn" class="btn ghost small">返回上级</button>
+            <span id="folderPathText">/</span>
+          </div>
+          <div id="fileList" class="file-list"></div>
+        </aside>
+
+        <section class="panel player-panel" data-mobile-panel="player">
+          <div id="videoStage" class="video-stage">
+            <div id="dplayerContainer" class="dplayer-container"></div>
+            <div id="danmakuLayer" class="danmaku-layer"></div>
+            <div id="playerOverlayHint" class="player-overlay-hint">请从左侧选择视频文件</div>
+          </div>
+
+          <div class="transport-controls">
+            <button id="seekBackBtn" class="btn ghost small">-10s</button>
+            <input id="seekRange" type="range" min="0" max="1000" step="1" value="0" />
+            <span id="timeLabel" class="time-label">00:00 / --:--</span>
+            <button id="seekForwardBtn" class="btn ghost small">+10s</button>
+          </div>
+
+          <div class="player-actions">
+            <input id="danmakuColorInput" type="color" value="#ffffff" />
+            <input id="danmakuInput" type="text" maxlength="80" placeholder="输入弹幕（回车发送）" />
+            <button id="sendDanmakuBtn" class="btn primary">发送弹幕</button>
+            <button id="fullscreenBtn" class="btn ghost">全屏</button>
+            <span id="syncHint" class="hint">等待同步...</span>
+          </div>
+        </section>
+
+        <aside class="panel chat-panel" data-mobile-panel="chat">
+          <div class="panel-title-row">
+            <h2>聊天</h2>
+            <span id="memberCount" class="hint">在线 0</span>
+          </div>
+          <div id="memberList" class="member-list"></div>
+          <div id="chatList" class="chat-list"></div>
+          <div class="emoji-row" id="emojiRow"></div>
+          <div class="chat-input-row">
+            <input id="chatInput" type="text" maxlength="500" placeholder="输入消息（回车发送）" />
+            <button id="chatSendBtn" class="btn primary">发送</button>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dplayer/dist/DPlayer.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.8.0/dist/mpegts.min.js"></script>
+    <script src="/room.js?v=20260219v1"></script>
+  </body>
+</html>

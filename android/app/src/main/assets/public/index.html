@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>超星同步放映厅 · 大厅</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css?v=20260219v1" />
+  </head>
+  <body class="page-lobby">
+    <div id="accessGate" class="gate-overlay">
+      <div class="gate-card">
+        <h1>进入放映厅</h1>
+        <p>请输入访问密码后使用全部功能</p>
+        <div class="gate-row">
+          <input id="accessPasswordInput" type="password" placeholder="请输入密码" maxlength="32" />
+          <button id="accessEnterBtn" class="btn primary">进入</button>
+        </div>
+        <p id="gateHint" class="hint">默认密码为 520</p>
+      </div>
+    </div>
+
+    <div id="lobbyApp" class="app-shell hidden">
+      <header class="topbar topbar-lobby">
+        <div class="brand">
+          <span class="brand-badge">WATCH</span>
+          <div>
+            <h1>超星同步放映厅</h1>
+            <p>移动端优先 · 建房即开播 · 全员同步弹幕与聊天</p>
+          </div>
+        </div>
+        <div class="status-line">
+          <span id="connectState" class="pill">未连接</span>
+          <span id="lobbyCountState" class="pill">在线房间：0</span>
+        </div>
+      </header>
+
+      <main class="lobby-layout">
+        <section class="panel lobby-create-panel">
+          <div class="panel-title-row">
+            <h2>快速进入</h2>
+          </div>
+          <div class="lobby-create-grid">
+            <label class="field">
+              <span>昵称</span>
+              <input id="nicknameInput" type="text" maxlength="32" placeholder="输入昵称" />
+            </label>
+            <button id="randomNicknameBtn" class="btn ghost small">随机昵称</button>
+
+            <label class="field">
+              <span>房间号</span>
+              <input id="roomIdInput" type="text" maxlength="64" placeholder="输入房间号" />
+            </label>
+            <button id="randomRoomBtn" class="btn ghost small">随机房间</button>
+
+            <button id="quickCreateBtn" class="btn primary">快速建房并进入</button>
+            <button id="enterRoomBtn" class="btn primary alt">进入房间</button>
+          </div>
+        </section>
+
+        <section class="panel lobby-list-panel">
+          <div class="panel-title-row">
+            <h2>在线房间</h2>
+            <button id="refreshLobbyBtn" class="btn ghost small">刷新列表</button>
+          </div>
+          <div id="lobbyHint" class="hint">加载中...</div>
+          <div id="lobbyRoomList" class="lobby-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/lobby.js?v=20260219v1"></script>
+  </body>
+</html>
