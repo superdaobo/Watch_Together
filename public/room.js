@@ -43,7 +43,8 @@ const state = {
   transportDragging: false,
   lockedDuration: 0,
   durationProbeTask: null,
-  mpegtsTimelineOffset: 0
+  mpegtsTimelineOffset: 0,
+  mobileTab: "player"
 };
 if (typeof window !== "undefined") {
   window.__vo_state = state;
@@ -80,7 +81,8 @@ const refs = {
   chatList: document.getElementById("chatList"),
   emojiRow: document.getElementById("emojiRow"),
   chatInput: document.getElementById("chatInput"),
-  chatSendBtn: document.getElementById("chatSendBtn")
+  chatSendBtn: document.getElementById("chatSendBtn"),
+  mobileTabs: Array.from(document.querySelectorAll("[data-mobile-tab-btn]"))
 };
 
 function nowMs() {
@@ -939,6 +941,28 @@ function updateOverlayHint() {
   refs.playerOverlayHint.classList.toggle("hidden", Boolean(state.media?.fileId));
 }
 
+function setMobileTab(tab) {
+  const nextTab = tab === "media" || tab === "chat" || tab === "player" ? tab : "player";
+  state.mobileTab = nextTab;
+  if (refs.roomApp) {
+    refs.roomApp.dataset.mobileCurrent = nextTab;
+  }
+  refs.mobileTabs.forEach((button) => {
+    button.classList.toggle("active", button.dataset.mobileTabBtn === nextTab);
+  });
+}
+
+function initMobileTabbar() {
+  if (refs.mobileTabs.length === 0) return;
+  refs.mobileTabs.forEach((button) => {
+    button.addEventListener("click", () => {
+      const tab = String(button.dataset.mobileTabBtn || "player");
+      setMobileTab(tab);
+    });
+  });
+  setMobileTab("player");
+}
+
 function renderMembers() {
   refs.memberList.innerHTML = "";
   refs.memberCount.textContent = `在线 ${state.members.length}`;
@@ -1700,6 +1724,9 @@ async function playFromFile(fileItem) {
   try {
     const media = await resolveMediaByFileId(fileItem.fileId, fileItem.name);
     await setMedia(media, true);
+    if (state.isMobile) {
+      setMobileTab("player");
+    }
     setHint(`视频已加载：${fileItem.name}`);
     requestPlayWithFallback(false).catch(() => {});
   } catch (error) {
@@ -2013,6 +2040,7 @@ async function bootstrap() {
   localStorage.setItem("vo_nickname", state.nickname);
 
   refs.roomApp.classList.remove("hidden");
+  initMobileTabbar();
   updateRoomHeader();
   updateTopStatus();
   updateOverlayHint();

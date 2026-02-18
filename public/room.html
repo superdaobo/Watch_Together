@@ -4,12 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>超星同步放映厅 · 房间</title>
-    <link rel="stylesheet" href="/styles.css?v=20260216v17" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css?v=20260219v1" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/dplayer/dist/DPlayer.min.css" />
   </head>
-  <body>
+  <body class="page-room">
     <div id="roomApp" class="app-shell hidden">
-      <header class="topbar">
+      <header class="topbar topbar-room">
         <div class="brand">
           <span class="brand-badge">ROOM</span>
           <div>
@@ -17,17 +23,27 @@
             <p id="roomSubtitle">正在连接...</p>
           </div>
         </div>
-        <div class="status-line">
-          <button id="backLobbyBtn" class="btn ghost">返回大厅</button>
-          <button id="claimBtn" class="btn ghost">抢主控</button>
-          <button id="leaveBtn" class="btn ghost">离开房间</button>
-          <span id="connectState" class="pill">未连接</span>
-          <span id="controllerState" class="pill">主控：--</span>
+        <div class="topbar-right">
+          <div class="action-line">
+            <button id="backLobbyBtn" class="btn ghost">返回大厅</button>
+            <button id="claimBtn" class="btn ghost">抢主控</button>
+            <button id="leaveBtn" class="btn ghost danger">离开房间</button>
+          </div>
+          <div class="status-line">
+            <span id="connectState" class="pill">未连接</span>
+            <span id="controllerState" class="pill">主控：--</span>
+          </div>
         </div>
       </header>
 
+      <nav class="mobile-tabbar" aria-label="房间导航">
+        <button type="button" class="mobile-tab active" data-mobile-tab-btn="player">播放</button>
+        <button type="button" class="mobile-tab" data-mobile-tab-btn="media">片库</button>
+        <button type="button" class="mobile-tab" data-mobile-tab-btn="chat">聊天</button>
+      </nav>
+
       <main class="layout">
-        <aside class="panel file-panel">
+        <aside class="panel file-panel" data-mobile-panel="media">
           <div class="panel-title-row">
             <h2>S3 视频库</h2>
             <button id="refreshFolderBtn" class="btn ghost small">刷新</button>
@@ -39,7 +55,7 @@
           <div id="fileList" class="file-list"></div>
         </aside>
 
-        <section class="panel player-panel">
+        <section class="panel player-panel" data-mobile-panel="player">
           <div id="videoStage" class="video-stage">
             <div id="dplayerContainer" class="dplayer-container"></div>
             <div id="danmakuLayer" class="danmaku-layer"></div>
@@ -62,7 +78,7 @@
           </div>
         </section>
 
-        <aside class="panel chat-panel">
+        <aside class="panel chat-panel" data-mobile-panel="chat">
           <div class="panel-title-row">
             <h2>聊天</h2>
             <span id="memberCount" class="hint">在线 0</span>
@@ -81,6 +97,6 @@
     <script src="/socket.io/socket.io.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dplayer/dist/DPlayer.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.8.0/dist/mpegts.min.js"></script>
-    <script src="/room.js?v=20260216v17"></script>
+    <script src="/room.js?v=20260219v1"></script>
   </body>
 </html>

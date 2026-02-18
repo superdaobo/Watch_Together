@@ -7,22 +7,19 @@ sdk: docker
 app_port: 7860
 ---
 
-# 超星同步放映厅（无 AList 依赖）
+# 超星同步放映厅（HF 托管 + 移动端壳应用）
 
-当前版本特性：
+## 1. 功能概览
 
-- 大厅页与房间页分离：先在大厅建房/选房，再进入播放页
+- 大厅页 + 房间页分离，先建房再进入播放页
 - 访问密码门禁（默认 `520`）
-- 超星小组盘目录浏览
-- 直连播放（不走服务器视频代理）
-- 多直连地址回退（提升特定视频播放成功率）
-- 自定义播放器控制条（播放、进度、倍速、音量、全屏）
+- S3 目录浏览与直连播放
 - 房间同步播放（播放、暂停、拖动、倍速、心跳校准）
-- 聊天、表情、弹幕
-- 全屏底部弹幕输入栏
-- 移动端友好布局
+- 聊天 / 表情 / 弹幕（含全屏输入栏）
+- 移动端优化布局（底部标签切换：播放/片库/聊天）
+- Capacitor 移动端壳（Android + iOS）
 
-## 1. 本地运行
+## 2. 本地运行（Web）
 
 ```bash
 npm install
@@ -30,53 +27,71 @@ cp .env.example .env
 npm start
 ```
 
-浏览器访问 `http://127.0.0.1:3000`。
+访问：`http://127.0.0.1:3000`
 
-## 2. 环境变量
-
-推荐使用 `CX_ADDITION_JSON`，也支持分字段配置：
+## 3. 环境变量
 
 ```env
 PORT=3000
 APP_ACCESS_PASSWORD=520
 
-CX_USER_NAME=
-CX_PASSWORD=
-CX_BBSID=
-CX_ROOT_FOLDER_ID=-1
-CX_COOKIE=
-CX_ADDITION_JSON=
+S3_ENDPOINT=https://s3.cstcloud.cn
+S3_BUCKET=
+S3_REGION=us-east-1
+S3_ACCESS_KEY_ID=
+S3_SECRET_ACCESS_KEY=
+S3_FORCE_PATH_STYLE=true
+S3_PLAY_MODE=signed-header
+S3_URL_EXPIRE_SECONDS=1800
+S3_MAX_KEYS=1000
 
 SYNC_DRIFT_THRESHOLD=0.4
 ROOM_CHAT_LIMIT=300
 ROOM_DANMAKU_LIMIT=500
+
+# Capacitor 壳应用加载的线上地址（建议指向你的 HF Space）
+MOBILE_WEB_URL=https://mini-hbut-video-online.hf.space
 ```
 
-`CX_ADDITION_JSON` 示例：
+## 4. Hugging Face Spaces 部署
 
-```env
-CX_ADDITION_JSON={"user_name":"...","password":"...","bbsid":"...","root_folder_id":"-1","cookie":"..."}
+1. 创建 Docker Space
+2. 推送代码
+3. 在 `Settings -> Variables and secrets` 填入环境变量
+4. 等待构建完成
+
+HF 默认端口：`7860`
+
+## 5. 移动端构建（Capacitor）
+
+```bash
+npm run mobile:doctor
+npm run mobile:add:android
+npm run mobile:add:ios
+npm run mobile:sync
 ```
 
-## 3. Hugging Face Spaces 部署
+说明：
+- Android 需要 Android SDK / JDK
+- iOS 需要 macOS + Xcode
+- 壳应用加载 `MOBILE_WEB_URL` 指向的 HF 服务
 
-1. 创建 `Docker Space`
-2. 推送本项目代码
-3. 在 `Settings -> Variables and secrets` 配置环境变量和机密
-4. 等待构建完成并访问 Space 地址
+## 6. GitHub Actions 自动构建与 Release
 
-默认监听 `PORT=7860`，与 HF Space 约定一致。
+工作流：`.github/workflows/mobile-release.yml`
 
-## 4. 页面与流程
+触发方式：
+- push 到 `main`
+- 手动 `workflow_dispatch`
 
-1. 打开 `/`（大厅页），输入访问密码
-2. 在大厅随机生成昵称和房间号，或加入在线房间
-3. 进入 `/room.html` 后主控选择视频并播放
-4. 其他端自动同步播放状态
-5. 聊天和弹幕可在普通/全屏模式下发送与显示
+产物：
+- Android：`app-debug.apk`
+- iOS：`watch-together-ios-simulator.zip`（模拟器 app 包）
 
-## 5. 安全建议
+工作流会在构建成功后自动创建 GitHub Release。
 
-- 不要把超星账号、密码、Cookie 提交到仓库
-- 生产环境只放在环境变量和 Space Secrets
-- 如凭据泄露，立即改密码并使旧 Cookie 失效
+## 7. 安全建议
+
+- 不要把 S3 密钥提交到仓库
+- 生产环境变量仅放在 HF / GitHub Secrets
+- 凭据泄露后立即轮换

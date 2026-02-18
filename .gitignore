@@ -3,3 +3,5 @@ node_modules/
 npm-debug.log*
 _tmp_alist/
 .server.pid
+android/
+ios/
