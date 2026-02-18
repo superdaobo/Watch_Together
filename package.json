@@ -28,6 +28,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.894.0",
     "@capacitor/android": "^8.1.0",
+    "@capacitor/cli": "^8.1.0",
     "@capacitor/core": "^8.1.0",
     "@capacitor/ios": "^8.1.0",
     "@smithy/hash-node": "^4.2.5",
@@ -37,9 +38,5 @@
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
     "socket.io": "^4.8.1"
-  },
-  "devDependencies": {
-    "@capacitor/cli": "^8.1.0",
-    "typescript": "^5.9.3"
   }
 }
