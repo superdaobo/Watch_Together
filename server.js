@@ -7,6 +7,7 @@ const path = require("node:path");
 const cors = require("cors");
 const express = require("express");
 const { Server } = require("socket.io");
+const { GetObjectCommand, HeadObjectCommand } = require("@aws-sdk/client-s3");
 
 const { createRoomHub } = require("./src/room-hub");
 const { S3MediaService } = require("./src/s3-media");
@@ -131,6 +132,66 @@ const mediaService = new S3MediaService({
   urlExpireSeconds: Number(process.env.S3_URL_EXPIRE_SECONDS || 1800),
   maxKeys: Number(process.env.S3_MAX_KEYS || 1000)
 });
+
+function parseRangeHeader(rawRange = "") {
+  const value = String(rawRange || "").trim();
+  if (!value) return "";
+  if (/^bytes=\d*-\d*$/.test(value)) {
+    return value;
+  }
+  return "";
+}
+
+function applyObjectHeaders(res, objectMeta = {}) {
+  const contentType = String(objectMeta.ContentType || "").trim();
+  const contentLength = Number(objectMeta.ContentLength || 0);
+  const contentRange = String(objectMeta.ContentRange || "").trim();
+  const eTag = String(objectMeta.ETag || "").trim();
+  const cacheControl = String(objectMeta.CacheControl || "").trim();
+  const lastModified = objectMeta.LastModified ? new Date(objectMeta.LastModified).toUTCString() : "";
+
+  res.setHeader("Accept-Ranges", "bytes");
+  if (contentType) res.setHeader("Content-Type", contentType);
+  if (Number.isFinite(contentLength) && contentLength >= 0) {
+    res.setHeader("Content-Length", String(contentLength));
+  }
+  if (contentRange) res.setHeader("Content-Range", contentRange);
+  if (eTag) res.setHeader("ETag", eTag);
+  if (cacheControl) res.setHeader("Cache-Control", cacheControl);
+  if (lastModified) res.setHeader("Last-Modified", lastModified);
+}
+
+async function pipeSdkBody(body, res) {
+  if (!body) {
+    res.end();
+    return;
+  }
+  if (typeof body.pipe === "function") {
+    await new Promise((resolve, reject) => {
+      body.on("error", reject);
+      res.on("close", resolve);
+      body.pipe(res);
+    });
+    return;
+  }
+  if (typeof body.transformToByteArray === "function") {
+    const chunk = await body.transformToByteArray();
+    res.end(Buffer.from(chunk));
+    return;
+  }
+  if (Buffer.isBuffer(body) || typeof body === "string") {
+    res.end(body);
+    return;
+  }
+  if (typeof body[Symbol.asyncIterator] === "function") {
+    for await (const chunk of body) {
+      res.write(chunk);
+    }
+    res.end();
+    return;
+  }
+  res.end();
+}
 
 io.use((socket, next) => {
   const cookies = parseCookieHeader(socket.request.headers.cookie || "");
@@ -284,6 +345,65 @@ app.get("/api/cx/link", async (req, res) => {
       ok: false,
       message: error.message || "获取播放地址失败"
     });
+  }
+});
+
+app.get("/api/cx/proxy/:fileId", async (req, res) => {
+  try {
+    const fileId = decodeURIComponent(String(req.params.fileId || "").trim());
+    if (!fileId) {
+      res.status(400).json({
+        ok: false,
+        message: "fileId 不能为空"
+      });
+      return;
+    }
+
+    const client = mediaService.getClient();
+    const range = parseRangeHeader(req.headers.range);
+    const command = new GetObjectCommand({
+      Bucket: mediaService.bucket,
+      Key: fileId,
+      Range: range || undefined
+    });
+    const object = await client.send(command);
+    const statusCode = Number(object.$metadata?.httpStatusCode || (object.ContentRange ? 206 : 200));
+
+    applyObjectHeaders(res, object);
+    res.status(statusCode >= 200 && statusCode < 600 ? statusCode : 200);
+    await pipeSdkBody(object.Body, res);
+  } catch (error) {
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
+    const status = Number(error?.$metadata?.httpStatusCode || 500);
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      ok: false,
+      message: error?.name === "NoSuchKey" ? "文件不存在" : error?.message || "S3 代理播放失败"
+    });
+  }
+});
+
+app.head("/api/cx/proxy/:fileId", async (req, res) => {
+  try {
+    const fileId = decodeURIComponent(String(req.params.fileId || "").trim());
+    if (!fileId) {
+      res.status(400).end();
+      return;
+    }
+    const client = mediaService.getClient();
+    const object = await client.send(
+      new HeadObjectCommand({
+        Bucket: mediaService.bucket,
+        Key: fileId
+      })
+    );
+    applyObjectHeaders(res, object);
+    res.status(200).end();
+  } catch (error) {
+    const status = Number(error?.$metadata?.httpStatusCode || 500);
+    res.status(status >= 400 && status < 600 ? status : 500).end();
   }
 });
 

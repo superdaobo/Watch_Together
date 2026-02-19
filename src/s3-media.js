@@ -316,6 +316,10 @@ class S3MediaService {
     return `/s3-direct/${encodeURIComponent(String(fileId || "").trim())}`;
   }
 
+  buildProxyPlayUrl(fileId) {
+    return `/api/cx/proxy/${encodeURIComponent(String(fileId || "").trim())}`;
+  }
+
   async createPresignedObjectUrl(fileId, options = {}) {
     const key = String(fileId || "").trim();
     if (!key) {
@@ -499,12 +503,16 @@ class S3MediaService {
       // ignore head error, keep link generation
     }
     const localBridgeUrl = this.buildLocalPlayUrl(key);
+    const proxyUrl = this.buildProxyPlayUrl(key);
     let playUrl = localBridgeUrl;
-    let candidateUrls = [localBridgeUrl];
+    let candidateUrls = [localBridgeUrl, proxyUrl].filter(Boolean);
     if (this.playMode === "presigned-url") {
       const presignedUrls = await this.buildPresignedCandidates(key);
       if (!presignedUrls.length) {
         throw new Error("生成预签名播放地址失败");
+      }
+      if (proxyUrl && !presignedUrls.includes(proxyUrl)) {
+        presignedUrls.push(proxyUrl);
       }
       if (localBridgeUrl && !presignedUrls.includes(localBridgeUrl)) {
         presignedUrls.push(localBridgeUrl);
@@ -514,7 +522,9 @@ class S3MediaService {
     } else {
       const presignedUrls = await this.buildPresignedCandidates(key);
       if (presignedUrls.length) {
-        candidateUrls = [localBridgeUrl, ...presignedUrls.filter((url) => url && url !== localBridgeUrl)];
+        candidateUrls = [localBridgeUrl, proxyUrl, ...presignedUrls].filter(
+          (url, index, list) => url && list.indexOf(url) === index
+        );
       }
     }
     const directUrl = this.buildObjectUrl(key);

@@ -370,19 +370,38 @@ function collectTsPtsSamples(bytes) {
 }
 
 async function fetchRangeBuffer(url, start, end) {
+  const fetchOptions = buildMediaFetchOptions(url);
   const response = await fetch(url, {
     method: "GET",
     headers: {
       Range: `bytes=${start}-${end}`
     },
-    mode: "cors",
-    credentials: "omit",
+    mode: fetchOptions.mode,
+    credentials: fetchOptions.credentials,
     cache: "no-store"
   });
   if (!(response.ok || response.status === 206)) {
     throw new Error(`range request failed: ${response.status}`);
   }
   return new Uint8Array(await response.arrayBuffer());
+}
+
+function buildMediaFetchOptions(url) {
+  try {
+    const parsed = new URL(String(url || ""), location.origin);
+    if (parsed.origin === location.origin) {
+      return {
+        mode: "same-origin",
+        credentials: "include"
+      };
+    }
+  } catch {
+    // ignore and fallback to cross-origin defaults
+  }
+  return {
+    mode: "cors",
+    credentials: "omit"
+  };
 }
 
 async function estimateTsDurationByPcr(url, contentLength) {
@@ -727,13 +746,14 @@ async function probeSourceType(url) {
   if (normalized.includes(".m3u8")) return "hls";
   if (normalized.includes(".flv")) return "flv";
   try {
+    const fetchOptions = buildMediaFetchOptions(raw);
     const response = await fetch(raw, {
       method: "GET",
       headers: {
         Range: "bytes=0-511"
       },
-      credentials: "omit",
-      mode: "cors"
+      credentials: fetchOptions.credentials,
+      mode: fetchOptions.mode
     });
     if (!response.ok) return "auto";
     const bytes = new Uint8Array(await response.arrayBuffer());
