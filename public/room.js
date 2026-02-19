@@ -34,6 +34,7 @@ const state = {
   playerFullscreen: false,
   isMobile: false,
   isIOS: false,
+  isNativeApp: false,
   iosInlineFullscreen: false,
   serviceWorkerReady: false,
   fullscreenDanmakuPlugin: null,
@@ -114,6 +115,17 @@ function isIOSClient() {
   if (/iPhone|iPad|iPod/i.test(platform)) return true;
   // iPadOS 13+ may report itself as Macintosh with touch points
   return /Macintosh/i.test(ua) && navigator.maxTouchPoints > 1;
+}
+
+function isCapacitorNative() {
+  try {
+    if (window.Capacitor?.isNativePlatform) {
+      return Boolean(window.Capacitor.isNativePlatform());
+    }
+  } catch {
+    // ignore
+  }
+  return /^capacitor:/i.test(location.protocol);
 }
 
 function getQueryParam(name) {
@@ -807,6 +819,26 @@ function shouldUseSignedHeaderBridge() {
   return state.playMode === "signed-header";
 }
 
+function shouldPreferPresignedCandidate() {
+  return shouldUseSignedHeaderBridge() && !state.serviceWorkerReady;
+}
+
+function prioritizeCandidateUrls(list = []) {
+  const merged = [];
+  list.forEach((url) => {
+    const value = String(url || "").trim();
+    if (!value || merged.includes(value)) return;
+    merged.push(value);
+  });
+  if (!shouldPreferPresignedCandidate()) {
+    return merged;
+  }
+  const nonBridge = merged.filter((url) => !isLocalDirectBridgeUrl(url));
+  if (!nonBridge.length) return merged;
+  const bridge = merged.filter((url) => isLocalDirectBridgeUrl(url));
+  return [...nonBridge, ...bridge];
+}
+
 function getIdentityLabel() {
   const name = String(state.nickname || "匿名用户");
   const role = isController() ? "主控" : "成员";
@@ -1159,6 +1191,14 @@ function ensurePlayer(sourceUrl = "") {
   if (!fullscreenPlugin.root.dataset.bound) {
     fullscreenPlugin.root.dataset.bound = "1";
     fullscreenPlugin.sendBtn.addEventListener("click", () => sendDanmaku(true));
+    fullscreenPlugin.sendBtn.addEventListener(
+      "touchend",
+      (event) => {
+        event.preventDefault();
+        sendDanmaku(true);
+      },
+      { passive: false }
+    );
     fullscreenPlugin.exitBtn.addEventListener("click", () => cancelPlayerFullscreen());
     fullscreenPlugin.toggleBtn?.addEventListener("click", () => {
       if (!isFullscreenMode()) {
@@ -1169,7 +1209,7 @@ function ensurePlayer(sourceUrl = "") {
       fullscreenPlugin.input?.focus();
     });
     fullscreenPlugin.input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") sendDanmaku(true);
+      if (event.key === "Enter" || event.code === "Enter" || event.keyCode === 13) sendDanmaku(true);
     });
     fullscreenPlugin.input.addEventListener("focus", () => showFullscreenDanmakuBar(false));
     fullscreenPlugin.input.addEventListener("input", () => showFullscreenDanmakuBar(false));
@@ -1287,7 +1327,7 @@ async function switchToCurrentSource(autoPlay = false) {
     throw new Error("没有可用播放地址");
   }
   if (isLocalDirectBridgeUrl(source) && !state.serviceWorkerReady) {
-    await ensureDirectS3Bridge();
+    throw new Error("当前环境不支持 Service Worker，且没有可用预签名地址");
   }
   const sourceType = await resolveSourceType(source);
   const dp = ensurePlayer(source);
@@ -1321,7 +1361,7 @@ async function recoverDirectPlaybackSource() {
   state.directRecoverAttempted = true;
   setHint("直连通道异常，正在自动修复...");
   try {
-    if (shouldUseSignedHeaderBridge()) {
+    if (shouldUseSignedHeaderBridge() && state.serviceWorkerReady) {
       await ensureDirectS3Bridge(true);
     }
     const recovered = await resolveMediaByFileId(state.media.fileId, state.media.name, state.media);
@@ -1370,20 +1410,22 @@ async function resolveMediaByFileId(fileId, fileName = "", fromMedia = null) {
   if (playUrl && !list.includes(playUrl)) {
     list.unshift(playUrl);
   }
-  if (playUrl && shouldUseSignedHeaderBridge() && isLocalDirectBridgeUrl(playUrl)) {
+  if (playUrl && shouldUseSignedHeaderBridge() && isLocalDirectBridgeUrl(playUrl) && state.serviceWorkerReady) {
     const retryUrl = appendRetryParam(playUrl, "seed");
     if (retryUrl && !list.includes(retryUrl)) {
       list.push(retryUrl);
     }
   }
+  const preferredCandidates = prioritizeCandidateUrls(list);
+  const preferredUrl = preferredCandidates[0] || playUrl || list[0] || "";
   return {
     id: fromMedia?.id || `${fileId}-${Date.now()}`,
     fileId,
     name: fileName || fromMedia?.name || "未命名视频",
     duration: Number(result.duration || fromMedia?.duration || 0),
     contentLength: Number(result.contentLength || fromMedia?.contentLength || 0),
-    candidateUrls: list,
-    url: playUrl || list[0] || ""
+    candidateUrls: preferredCandidates,
+    url: preferredUrl
   };
 }
 
@@ -2027,6 +2069,8 @@ async function bootstrap() {
 
   state.isMobile = isMobileClient();
   state.isIOS = isIOSClient();
+  state.isNativeApp = isCapacitorNative();
+  document.documentElement.classList.toggle("is-ios", state.isIOS);
   state.roomId = String(getQueryParam("room") || localStorage.getItem("vo_room_id") || "").trim();
   state.nickname = String(getQueryParam("nick") || localStorage.getItem("vo_nickname") || "").trim();
   if (!state.roomId) {
@@ -2045,17 +2089,6 @@ async function bootstrap() {
   updateTopStatus();
   updateOverlayHint();
 
-  try {
-    if (shouldUseSignedHeaderBridge()) {
-      await ensureDirectS3Bridge();
-    }
-  } catch (error) {
-    const message = `S3 直连初始化失败：${error.message}`;
-    setHint(message);
-    refs.fileList.innerHTML = `<div class="hint">${message}</div>`;
-    return;
-  }
-
   bindActions();
   ensurePlayer("");
 
@@ -2070,7 +2103,12 @@ async function bootstrap() {
     const cfg = await fetchJson("/api/cx/config");
     state.playMode = String(cfg?.config?.playMode || "signed-header");
     if (shouldUseSignedHeaderBridge() && !state.serviceWorkerReady) {
-      await ensureDirectS3Bridge();
+      try {
+        await ensureDirectS3Bridge();
+      } catch (error) {
+        const text = `S3 直连桥不可用，已自动切换预签名播放：${error.message}`;
+        setHint(text);
+      }
     }
     state.rootFolderId = String(cfg?.config?.rootFolderId || "-1");
     state.folderStack = [{ id: state.rootFolderId, name: "根目录" }];

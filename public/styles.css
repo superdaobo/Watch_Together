@@ -164,7 +164,10 @@ input[type="color"] {
 .app-shell {
   max-width: 1720px;
   margin: 0 auto;
-  padding: 16px;
+  padding-top: max(16px, env(safe-area-inset-top));
+  padding-right: max(16px, env(safe-area-inset-right));
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+  padding-left: max(16px, env(safe-area-inset-left));
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -503,6 +506,7 @@ input[type="color"] {
 .dplayer-danmaku-plugin-bar input {
   flex: 1;
   min-width: 120px;
+  font-size: 16px;
 }
 
 .dplayer-danmaku-plugin-bar .btn {
@@ -669,7 +673,8 @@ body.ios-inline-fullscreen .dplayer-danmaku-plugin-bar {
   left: 50%;
   transform: translateX(-50%);
   width: min(960px, calc(100% - 16px));
-  bottom: max(14px, calc(env(safe-area-inset-bottom) + 8px));
+  bottom: max(20px, calc(env(safe-area-inset-bottom) + 12px));
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
   z-index: 2147483000;
 }
 
@@ -694,8 +699,10 @@ body.ios-inline-fullscreen .dplayer-full-in-icon {
 
 @media (max-width: 1024px) {
   .app-shell {
-    padding: 10px;
+    padding-top: max(10px, env(safe-area-inset-top));
+    padding-right: max(10px, env(safe-area-inset-right));
     padding-bottom: max(10px, env(safe-area-inset-bottom));
+    padding-left: max(10px, env(safe-area-inset-left));
   }
 
   .topbar {
@@ -730,7 +737,7 @@ body.ios-inline-fullscreen .dplayer-full-in-icon {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
     position: sticky;
-    top: 10px;
+    top: max(10px, env(safe-area-inset-top));
     z-index: 30;
   }
 

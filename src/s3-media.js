@@ -392,6 +392,24 @@ class S3MediaService {
     };
   }
 
+  async buildPresignedCandidates(fileId) {
+    const key = String(fileId || "").trim();
+    if (!key) return [];
+    const regionCandidates = buildRegionCandidates(this.region);
+    const presignedUrls = [];
+    for (const region of regionCandidates) {
+      try {
+        const url = await this.createPresignedObjectUrl(key, { method: "GET", region });
+        if (url && !presignedUrls.includes(url)) {
+          presignedUrls.push(url);
+        }
+      } catch {
+        // ignore single-region sign failure and continue fallback
+      }
+    }
+    return presignedUrls;
+  }
+
   async listFolder(folderId) {
     const prefix = normalizeFolderPrefix(folderId);
     const client = this.getClient();
@@ -480,30 +498,24 @@ class S3MediaService {
     } catch {
       // ignore head error, keep link generation
     }
-    let playUrl = this.buildLocalPlayUrl(key);
-    let candidateUrls = [playUrl];
+    const localBridgeUrl = this.buildLocalPlayUrl(key);
+    let playUrl = localBridgeUrl;
+    let candidateUrls = [localBridgeUrl];
     if (this.playMode === "presigned-url") {
-      const regionCandidates = buildRegionCandidates(this.region);
-      const presignedUrls = [];
-      for (const region of regionCandidates) {
-        try {
-          const url = await this.createPresignedObjectUrl(key, { method: "GET", region });
-          if (url && !presignedUrls.includes(url)) {
-            presignedUrls.push(url);
-          }
-        } catch {
-          // ignore single-region sign failure and continue fallback
-        }
-      }
+      const presignedUrls = await this.buildPresignedCandidates(key);
       if (!presignedUrls.length) {
         throw new Error("生成预签名播放地址失败");
       }
-      const localBridgeUrl = this.buildLocalPlayUrl(key);
       if (localBridgeUrl && !presignedUrls.includes(localBridgeUrl)) {
         presignedUrls.push(localBridgeUrl);
       }
       playUrl = presignedUrls[0];
       candidateUrls = presignedUrls;
+    } else {
+      const presignedUrls = await this.buildPresignedCandidates(key);
+      if (presignedUrls.length) {
+        candidateUrls = [localBridgeUrl, ...presignedUrls.filter((url) => url && url !== localBridgeUrl)];
+      }
     }
     const directUrl = this.buildObjectUrl(key);
 
